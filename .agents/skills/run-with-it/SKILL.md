@@ -178,8 +178,9 @@ route uses this exact model set:
 |---|---|
 | quite-easy / easy | GPT-5.4, Codex Spark, GPT-5.6 Luna, Claude Sonnet 5, Claude Haiku 4.5, eligible Gemini models exposed by Agy |
 | medium | GPT-5.6 Terra, Codex Spark, Claude Sonnet 5 |
-| medium-hard | GPT-5.5, GPT-5.6 Sol, Codex Spark, Claude Sonnet 5 |
-| complex / holy-fuck | GPT-5.6 Sol, Claude Opus 5 |
+| medium-hard | GPT-5.5, GPT-5.6 Sol, Claude Opus 5 |
+| complex | GPT-5.6 Sol, Claude Opus 5 |
+| holy-fuck | GPT-5.6 Sol, Claude Opus 5, Claude Fable 5 |
 
 Complexity scoring is exempt from this automatic matrix and retains its
 independent weight-based routing. Review applies its existing one-band increase; planning applies its existing two-band increase before applying the matrix. Explicit `FORCED_MODEL` values bypass automatic membership but must still pass compatibility and availability checks.
@@ -187,8 +188,9 @@ independent weight-based routing. Review applies its existing one-band increase;
 Effective-band effort:
 
 - Sol: `high` at medium-hard, `xhigh` at complex and holy-fuck.
-- Sonnet 5: `low`, `medium`, `medium`, `high` from quite-easy through medium-hard.
-- Opus 5: `xhigh` at complex, `max` at holy-fuck.
+- Sonnet 5: `low`, `medium`, `medium` from quite-easy through medium.
+- Opus 5: `high` at medium-hard, `xhigh` at complex, `max` at holy-fuck.
+- Fable 5: `max` at holy-fuck.
 
 The generic route effort becomes Codex `model_reasoning_effort` or Claude Code
 `--effort`; Agy receives no effort flag.

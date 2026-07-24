@@ -241,8 +241,9 @@ then limits every non-complexity automatic route to this exact set:
 |---|---|
 | quite-easy / easy | GPT-5.4, Codex Spark, GPT-5.6 Luna, Claude Sonnet 5, Claude Haiku 4.5, eligible Gemini models exposed by Agy |
 | medium | GPT-5.6 Terra, Codex Spark, Claude Sonnet 5 |
-| medium-hard | GPT-5.5, GPT-5.6 Sol, Codex Spark, Claude Sonnet 5 |
-| complex / holy-fuck | GPT-5.6 Sol, Claude Opus 5 |
+| medium-hard | GPT-5.5, GPT-5.6 Sol, Claude Opus 5 |
+| complex | GPT-5.6 Sol, Claude Opus 5 |
+| holy-fuck | GPT-5.6 Sol, Claude Opus 5, Claude Fable 5 |
 
 Complexity scoring keeps its independent lightweight routing. Review applies a
 one-band increase and planning applies a two-band increase before this matrix.
@@ -250,9 +251,10 @@ Explicit forced-model overrides may select outside the automatic matrix but
 still must pass agent compatibility and availability checks.
 
 Effort is also based on the effective band: Sol uses `high` at medium-hard and
-`xhigh` at complex/holy-fuck; Sonnet 5 uses `low`, `medium`, `medium`, and `high`
-from quite-easy through medium-hard; Opus 5 uses `xhigh` at complex and `max`
-at holy-fuck. The runner translates these to Codex `model_reasoning_effort` or
+`xhigh` at complex/holy-fuck; Sonnet 5 uses `low`, `medium`, and `medium` from
+quite-easy through medium; Opus 5 uses `high` at medium-hard, `xhigh` at
+complex, and `max` at holy-fuck; Fable 5 uses `max` at holy-fuck. The runner
+translates these to Codex `model_reasoning_effort` or
 Claude Code `--effort`.
 
 ### Orchestration knobs

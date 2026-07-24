@@ -117,7 +117,7 @@ if "gpt-5.3-codex-spark" in codex_model.get("routing_disabled_models", []):
     raise SystemExit("codex registry must not disable Spark after the weekly limit reset")
 
 claude_model = registry["agents"]["claude"]["model"]
-if claude_model.get("known_models") != ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]:
+if claude_model.get("known_models") != ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]:
     raise SystemExit(f"claude known models mismatch: {claude_model.get('known_models')!r}")
 catalog = registry["model_catalog"]
 expected_gpt56 = {
@@ -143,6 +143,8 @@ if "claude-opus-4-8" in catalog:
     raise SystemExit("Opus 4.8 must be removed from the model catalog; use only Opus 5 series")
 if "claude-opus-5" not in catalog:
     raise SystemExit("Opus 5 must remain in the model catalog")
+if "claude-fable-5" not in catalog:
+    raise SystemExit("Fable 5 must remain in the model catalog")
 if catalog["gpt-5.3-codex-spark"].get("routing_disabled") is True:
     raise SystemExit("Codex Spark must be routable after the weekly limit reset")
 
@@ -158,9 +160,9 @@ expected_policy = {
     "quite-easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "medium": {"models": ["gpt-5.6-terra", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
-    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
+    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "claude-opus-5"], "providers": []},
     "complex": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
-    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
+    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5", "claude-fable-5"], "providers": []},
 }
 assert registry["model_routing"]["non_complexity_band_policy"] == expected_policy
 expected_targets = {
@@ -175,8 +177,9 @@ assert distribution["non_complexity_band_target_percent"] == expected_targets
 assert set(distribution["role_band_target_percent"]) == {"complexity"}
 expected_effort = {
     "gpt-5.6-sol": {"medium-hard": "high", "complex": "xhigh", "holy-fuck": "xhigh"},
-    "claude-sonnet-5": {"quite-easy": "low", "easy": "medium", "medium": "medium", "medium-hard": "high"},
-    "claude-opus-5": {"complex": "xhigh", "holy-fuck": "max"},
+    "claude-sonnet-5": {"quite-easy": "low", "easy": "medium", "medium": "medium"},
+    "claude-opus-5": {"medium-hard": "high", "complex": "xhigh", "holy-fuck": "max"},
+    "claude-fable-5": {"holy-fuck": "max"},
 }
 assert registry["model_routing"]["effort_by_model_and_band"] == expected_effort
 for level, policy in expected_policy.items():

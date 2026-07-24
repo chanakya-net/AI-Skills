@@ -213,9 +213,9 @@ expected_policy = {
     "quite-easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "medium": {"models": ["gpt-5.6-terra", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
-    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
+    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "claude-opus-5"], "providers": []},
     "complex": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
-    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
+    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5", "claude-fable-5"], "providers": []},
 }
 assert model_routing["non_complexity_band_policy"] == expected_policy
 expected_targets = {
@@ -246,6 +246,7 @@ assert router.candidate_model_ids(registry, "complexity", "complex", "gpt-5.6-lu
 
 claude_model = agents["claude"]["model"]
 expected_claude_models = [
+    "claude-fable-5",
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
