@@ -130,7 +130,7 @@ dry_plan="$("${DISPATCH}" --dry-run \
   --issue 42 \
   --cycle 1 \
   --agent claude \
-  --model claude-opus-4-8 \
+  --model claude-opus-5 \
   --context-file "${CONTEXT_FILE}" \
   --prompt-file "${PLAN_PROMPT}" \
   --log-file "${ISSUE_DIR}/workers/plan/cycle-1.log" \

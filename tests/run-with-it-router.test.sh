@@ -117,7 +117,7 @@ if "gpt-5.3-codex-spark" in codex_model.get("routing_disabled_models", []):
     raise SystemExit("codex registry must not disable Spark after the weekly limit reset")
 
 claude_model = registry["agents"]["claude"]["model"]
-if claude_model.get("known_models") != ["claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]:
+if claude_model.get("known_models") != ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]:
     raise SystemExit(f"claude known models mismatch: {claude_model.get('known_models')!r}")
 catalog = registry["model_catalog"]
 expected_gpt56 = {
@@ -138,9 +138,11 @@ assert "gpt-5.5" not in registry["model_routing"]["band_required_models"]["compl
 assert "gpt-5.5" not in registry["model_routing"]["band_required_models"]["holy-fuck"]
 assert "gpt-5.6-sol" in registry["model_routing"]["band_required_models"]["holy-fuck"]
 if "claude-opus-4.7" in catalog:
-    raise SystemExit("Opus 4.7 must be removed from the model catalog; use only Opus 4.8 series")
-if "claude-opus-4-8" not in catalog:
-    raise SystemExit("Opus 4.8 must remain in the model catalog")
+    raise SystemExit("Opus 4.7 must be removed from the model catalog; use only Opus 5 series")
+if "claude-opus-4-8" in catalog:
+    raise SystemExit("Opus 4.8 must be removed from the model catalog; use only Opus 5 series")
+if "claude-opus-5" not in catalog:
+    raise SystemExit("Opus 5 must remain in the model catalog")
 if catalog["gpt-5.3-codex-spark"].get("routing_disabled") is True:
     raise SystemExit("Codex Spark must be routable after the weekly limit reset")
 
@@ -157,8 +159,8 @@ expected_policy = {
     "easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "medium": {"models": ["gpt-5.6-terra", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
     "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
-    "complex": {"models": ["gpt-5.6-sol", "claude-opus-4-8"], "providers": []},
-    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-4-8"], "providers": []},
+    "complex": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
+    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
 }
 assert registry["model_routing"]["non_complexity_band_policy"] == expected_policy
 expected_targets = {
@@ -174,7 +176,7 @@ assert set(distribution["role_band_target_percent"]) == {"complexity"}
 expected_effort = {
     "gpt-5.6-sol": {"medium-hard": "high", "complex": "xhigh", "holy-fuck": "xhigh"},
     "claude-sonnet-5": {"quite-easy": "low", "easy": "medium", "medium": "medium", "medium-hard": "high"},
-    "claude-opus-4-8": {"complex": "xhigh", "holy-fuck": "max"},
+    "claude-opus-5": {"complex": "xhigh", "holy-fuck": "max"},
 }
 assert registry["model_routing"]["effort_by_model_and_band"] == expected_effort
 for level, policy in expected_policy.items():
@@ -206,7 +208,7 @@ assert_json_field "${sol_complex}" 'payload["effort"] == "xhigh"' "Sol complex u
 sonnet_easy="$(${ROUTER_PATH} --registry-file "${REGISTRY_PATH}" --ledger-file "${WORK_DIR}/effort.json" --role impl --complexity-level easy --detected-agents claude --forced-model claude-sonnet-5)"
 assert_json_field "${sonnet_easy}" 'payload["effort"] == "medium"' "Sonnet easy uses medium effort"
 
-opus_holy="$(${ROUTER_PATH} --registry-file "${REGISTRY_PATH}" --ledger-file "${WORK_DIR}/effort.json" --role impl --complexity-level holy-fuck --detected-agents claude --forced-model claude-opus-4-8)"
+opus_holy="$(${ROUTER_PATH} --registry-file "${REGISTRY_PATH}" --ledger-file "${WORK_DIR}/effort.json" --role impl --complexity-level holy-fuck --detected-agents claude --forced-model claude-opus-5)"
 assert_json_field "${opus_holy}" 'payload["effort"] == "max"' "Opus holy-fuck uses max effort"
 
 echo "PASS: router resolves band-specific model effort"
@@ -344,10 +346,10 @@ multi_exclusion_output="$("${ROUTER_PATH}" \
   --complexity-level medium-hard \
   --detected-agents codex,claude \
   --exclude-model gpt-5.5 \
-  --exclude-model claude-opus-4-8)"
+  --exclude-model claude-opus-5)"
 
-assert_json_field "${multi_exclusion_output}" 'payload["model"] not in {"gpt-5.5", "claude-opus-4-8"}' "review routing honors every model exclusion"
-assert_json_field "${multi_exclusion_output}" 'payload["model_exclusions"] == ["claude-opus-4-8", "gpt-5.5"]' "router output records every applied model exclusion"
+assert_json_field "${multi_exclusion_output}" 'payload["model"] not in {"gpt-5.5", "claude-opus-5"}' "review routing honors every model exclusion"
+assert_json_field "${multi_exclusion_output}" 'payload["model_exclusions"] == ["claude-opus-5", "gpt-5.5"]' "router output records every applied model exclusion"
 
 echo "PASS: router honors cumulative model exclusions"
 

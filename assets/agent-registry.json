@@ -84,7 +84,7 @@
         "extended-thinking"
       ]
     },
-    "claude-opus-4-8": {
+    "claude-opus-5": {
       "provider": "anthropic",
       "ability": "frontier",
       "complexity_weight": 9,
@@ -109,7 +109,7 @@
         "speed-intelligence-balance"
       ]
     },
-    "claude-opus-4-8-high": {
+    "claude-opus-5-high": {
       "provider": "anthropic",
       "ability": "frontier",
       "complexity_weight": 10,
@@ -120,7 +120,7 @@
         "complex-problems"
       ]
     },
-    "claude-opus-4-8-xhigh": {
+    "claude-opus-5-xhigh": {
       "provider": "anthropic",
       "ability": "frontier",
       "complexity_weight": 10,
@@ -453,14 +453,14 @@
       "complex": {
         "models": [
           "gpt-5.6-sol",
-          "claude-opus-4-8"
+          "claude-opus-5"
         ],
         "providers": []
       },
       "holy-fuck": {
         "models": [
           "gpt-5.6-sol",
-          "claude-opus-4-8"
+          "claude-opus-5"
         ],
         "providers": []
       }
@@ -477,7 +477,7 @@
         "medium": "medium",
         "medium-hard": "high"
       },
-      "claude-opus-4-8": {
+      "claude-opus-5": {
         "complex": "xhigh",
         "holy-fuck": "max"
       }
@@ -647,7 +647,7 @@
         "fallback_agents": [
           "claude"
         ],
-        "_note": "Anthropic models route through any available agent, preferring direct Claude for the active Claude subscription. claude-opus-4-8 is min_band=holy-fuck and should not appear below that band. Opus routing uses only the 4.8 series."
+        "_note": "Anthropic models route through any available agent, preferring direct Claude for the active Claude subscription. claude-opus-5 is min_band=holy-fuck and should not appear below that band. Opus routing uses only the Opus 5 series."
       }
     },
     "hard_minimum_overrides": [
@@ -660,15 +660,15 @@
       "complex": [],
       "holy-fuck": [
         "gpt-5.6-sol",
-        "claude-opus-4-8"
+        "claude-opus-5"
       ],
-      "_note": "GPT-5.6 Sol and Claude Opus 4.8 are pinned into the holy-fuck pool regardless of subscription-neutral ranking. GPT-5.5 remains available only through an explicit forced-model override."
+      "_note": "GPT-5.6 Sol and Claude Opus 5 are pinned into the holy-fuck pool regardless of subscription-neutral ranking. GPT-5.5 remains available only through an explicit forced-model override."
     },
     "interchangeable_agent_groups": [],
     "agent_preference_rules": [
       {
         "models": [
-          "claude-opus-4-8"
+          "claude-opus-5"
         ],
         "preferred_agents": [
           "claude"
@@ -692,7 +692,7 @@
         "preferred_agents": [
           "claude"
         ],
-        "_note": "Direct Claude agent is preferred for Anthropic models under the current Claude subscription. claude-opus-4-8 is min_band=holy-fuck and excluded from lower bands automatically; Opus routing uses only the 4.8 series."
+        "_note": "Direct Claude agent is preferred for Anthropic models under the current Claude subscription. claude-opus-5 is min_band=holy-fuck and excluded from lower bands automatically; Opus routing uses only the Opus 5 series."
       }
     ]
   },
@@ -793,7 +793,7 @@
         "default": "claude-sonnet-4-6",
         "flag_template": "--model {{model}}",
         "known_models": [
-          "claude-opus-4-8",
+          "claude-opus-5",
           "claude-sonnet-5",
           "claude-sonnet-4-6",
           "claude-haiku-4-5"

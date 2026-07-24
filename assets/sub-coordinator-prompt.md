@@ -451,7 +451,7 @@ Usage target summary from `agent-registry.json`:
 - every non-complexity role prefers Codex first, Claude second, and Agy/Gemini third; review still excludes the implementation model when possible
 - quite-easy/easy routes use GPT-5.4, Codex Spark, GPT-5.6 Luna, Claude Sonnet 5, Claude Haiku 4.5, or eligible Gemini models exposed by Agy
 - medium routes use GPT-5.6 Terra, Codex Spark, or Claude Sonnet 5; medium-hard routes use GPT-5.5, GPT-5.6 Sol, Codex Spark, or Claude Sonnet 5
-- complex/holy-fuck routes use GPT-5.6 Sol or Claude Opus 4.8; Sol uses high effort only at medium-hard and xhigh above it, while Opus uses xhigh at complex and max at holy-fuck
+- complex/holy-fuck routes use GPT-5.6 Sol or Claude Opus 5; Sol uses high effort only at medium-hard and xhigh above it, while Opus uses xhigh at complex and max at holy-fuck
 
 Bash helper shape:
 ```bash
