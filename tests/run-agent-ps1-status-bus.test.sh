@@ -219,7 +219,7 @@ assert_contains "$codex_xhigh_output" "'model_reasoning_effort=xhigh'" "PowerShe
 claude_xhigh_output="$(REPO_ROOT="${ROOT_DIR}" \
   "$PS_CMD" -NoProfile -File "$RUNNER_PATH" \
   --agent claude \
-  --model claude-opus-4-8 \
+  --model claude-opus-5 \
   --effort xhigh \
   --context-file "$CONTEXT_FILE" \
   --prompt-file "$PROMPT_FILE" \

@@ -213,9 +213,9 @@ expected_policy = {
     "quite-easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "easy": {"models": ["gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.6-luna", "claude-sonnet-5", "claude-haiku-4-5"], "providers": ["google"]},
     "medium": {"models": ["gpt-5.6-terra", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
-    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "gpt-5.3-codex-spark", "claude-sonnet-5"], "providers": []},
-    "complex": {"models": ["gpt-5.6-sol", "claude-opus-4-8"], "providers": []},
-    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-4-8"], "providers": []},
+    "medium-hard": {"models": ["gpt-5.5", "gpt-5.6-sol", "claude-opus-5"], "providers": []},
+    "complex": {"models": ["gpt-5.6-sol", "claude-opus-5"], "providers": []},
+    "holy-fuck": {"models": ["gpt-5.6-sol", "claude-opus-5", "claude-fable-5"], "providers": []},
 }
 assert model_routing["non_complexity_band_policy"] == expected_policy
 expected_targets = {
@@ -246,7 +246,8 @@ assert router.candidate_model_ids(registry, "complexity", "complex", "gpt-5.6-lu
 
 claude_model = agents["claude"]["model"]
 expected_claude_models = [
-    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-opus-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
@@ -274,7 +275,8 @@ for model_id in expected_copilot_models:
 check("claude-sonnet-4.6" in copilot_model.get("known_models", []), "Copilot-specific Claude model ID is preserved")
 check("claude-sonnet-4-6" in claude_model.get("known_models", []), "Claude-specific Claude model ID is preserved")
 check("claude-opus-4.7" not in model_catalog, "Opus 4.7 is removed from the model catalog")
-check("claude-opus-4-8" in model_catalog, "Opus 4.8 remains in the model catalog")
+check("claude-opus-4-8" not in model_catalog, "Opus 4.8 is removed from the model catalog")
+check("claude-opus-5" in model_catalog, "Opus 5 remains in the model catalog")
 
 google_rules = provider_rules.get("google", {})
 check(google_rules.get("automatic_routing") == "all", "google provider can route through agy for all bands")
