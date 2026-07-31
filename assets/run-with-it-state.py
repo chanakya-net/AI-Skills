@@ -9,6 +9,7 @@ spawning and monitoring.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import posixpath
@@ -163,6 +164,111 @@ def recovery_max_attempts(args: argparse.Namespace) -> int:
     return max(value, 0)
 
 
+def compaction_handoffs(entry: dict[str, Any]) -> int:
+    value = entry.get("sub_coord_compaction_handoffs", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(value, 0)
+
+
+def parse_epoch(value: Any) -> float | None:
+    """Parse an ISO-8601 `...Z` stamp (the format every runtime artifact uses)
+    into epoch seconds. Returns None for anything unparseable rather than
+    raising: a malformed stamp must degrade to "no freshness evidence", never
+    to a crash inside the recovery analyzer."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp()
+
+
+def path_mtime(path: Any) -> float | None:
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def process_alive(pid: Any) -> bool | None:
+    """Tri-state liveness probe: True alive, False provably gone, None unknown.
+
+    Windows is deliberately "unknown": `os.kill(pid, 0)` there does NOT probe,
+    it calls TerminateProcess and would kill the very worker we are asking
+    about. Only POSIX gets the signal-0 probe; every other platform falls back
+    to the artifact-freshness heuristic, which is platform-independent."""
+    if os.name != "posix":
+        return None
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists, owned by another user.
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def worker_liveness(
+    worker: dict[str, Any],
+    worker_state: dict[str, Any],
+    *,
+    now: float,
+    stale_seconds: int,
+    dead_pid_grace_seconds: int,
+) -> dict[str, Any]:
+    """Decide whether a worker whose state file still reads "running" is really
+    running. The state file is a snapshot maintained by that worker's dispatcher
+    (rewritten every poll, ~20s); it is NOT self-invalidating. When the
+    sub-coordinator dies it takes the dispatcher down with it, freezing the file
+    mid-flight at state=running/alive=true forever. Trusting that frozen field
+    is what wedged the pool: the supervisor waited on a worker that had been
+    dead for hours because nothing ever re-derived liveness.
+
+    Two independent signals, either of which proves death:
+      * both recorded PIDs provably gone (POSIX only), after a short grace so a
+        dispatcher observed mid-exit is not mistaken for an orphan;
+      * no artifact has been touched in `stale_seconds` — a live dispatcher
+        rewrites the state file every poll, so silence that long means the
+        dispatcher itself is gone.
+    Freshness takes the newest of state-file mtime, log mtime, and the recorded
+    `updated_at`, so a worker still emitting output counts as alive even if its
+    own state writer died."""
+    candidates = [
+        path_mtime(worker_state.get("state_file") or worker.get("state_file")),
+        path_mtime(worker_state.get("log_file") or worker.get("log_file")),
+        parse_epoch(worker_state.get("updated_at")),
+        parse_epoch(worker_state.get("last_output_at")),
+    ]
+    stamps = [value for value in candidates if isinstance(value, (int, float))]
+    freshest = max(stamps) if stamps else None
+    age = int(max(now - freshest, 0)) if freshest is not None else None
+
+    pids = [worker_state.get("runner_pid"), worker_state.get("dispatcher_pid"), worker.get("pid")]
+    verdicts = [process_alive(pid) for pid in pids]
+    known = [verdict for verdict in verdicts if verdict is not None]
+    pids_alive = True if any(verdict is True for verdict in verdicts) else (False if known else None)
+
+    if age is not None and age >= stale_seconds:
+        return {"alive": False, "reason": "state-file-stale", "age_seconds": age, "pids_alive": pids_alive}
+    if pids_alive is False and (age is None or age >= dead_pid_grace_seconds):
+        return {"alive": False, "reason": "pids-dead", "age_seconds": age, "pids_alive": pids_alive}
+    return {"alive": True, "reason": "fresh", "age_seconds": age, "pids_alive": pids_alive}
+
+
 def compact_worker_decision(
     *,
     action: str,
@@ -175,9 +281,11 @@ def compact_worker_decision(
     worker_state: dict[str, Any] | None = None,
     attempt: int = 0,
     max_attempts: int = 2,
+    liveness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     worker = worker if isinstance(worker, dict) else {}
     worker_state = worker_state if isinstance(worker_state, dict) else {}
+    liveness = liveness if isinstance(liveness, dict) else {}
     return {
         "action": action,
         "reason": reason,
@@ -191,6 +299,8 @@ def compact_worker_decision(
         "worker_state_file": worker.get("state_file") or worker_state.get("state_file"),
         "worker_done_file": worker.get("done_file") or worker_state.get("done_file"),
         "worker_result_file": worker.get("result_file") or worker_state.get("result_file"),
+        "worker_age_seconds": liveness.get("age_seconds"),
+        "worker_liveness": liveness.get("reason"),
         "recovery_attempt": attempt,
         "max_recovery_attempts": max_attempts,
     }
@@ -691,6 +801,7 @@ def finalize_issue(args: argparse.Namespace) -> int:
             entry["stale_base_report_file"] = args.report_file
             entry["stale_base_requeue_attempts"] = stale_base_requeue_attempts + 1
             entry["sub_coord_recovery_attempts"] = 0
+            entry["sub_coord_compaction_handoffs"] = 0
             if archived:
                 entry["stale_base_archive_dir"] = archived
             state["active_pool_issues"] = [
@@ -765,13 +876,27 @@ def analyze_sub_coord_failure(args: argparse.Namespace) -> int:
     entry = issue_entry(state, args.issue)
     issue_dir = issue_dir_for_report(state, args.issue, args.report_file)
     sub_state_file = str(Path(issue_dir) / "sub-state.json") if issue_dir else ""
-    attempt = recovery_attempt(entry) + 1
-    max_attempts = recovery_max_attempts(args)
+    sub_state = load_optional_json(sub_state_file)
+
+    # A sub-coordinator that halted for compaction did not fail: it hit its
+    # context budget, persisted resumable state, and exited by contract. Charging
+    # that to the (deliberately tiny) failure-recovery budget kills long issues
+    # for doing exactly what they were told to do, so handoffs are counted and
+    # capped separately.
+    compaction_handoff = sub_state.get("compaction_requested") is True
+    if compaction_handoff:
+        attempt = compaction_handoffs(entry) + 1
+        max_attempts = max(int(getattr(args, "max_compaction_handoffs", 6) or 0), 0)
+        exhausted_reason = "sub-coordinator-compaction-handoffs-exhausted"
+    else:
+        attempt = recovery_attempt(entry) + 1
+        max_attempts = recovery_max_attempts(args)
+        exhausted_reason = "sub-coordinator-recovery-attempts-exhausted"
 
     if attempt > max_attempts:
         decision = compact_worker_decision(
             action="block",
-            reason="sub-coordinator-recovery-attempts-exhausted",
+            reason=exhausted_reason,
             issue=args.issue,
             issue_dir=issue_dir,
             sub_state_file=sub_state_file,
@@ -781,7 +906,6 @@ def analyze_sub_coord_failure(args: argparse.Namespace) -> int:
         print(json.dumps(decision, sort_keys=True))
         return 0
 
-    sub_state = load_optional_json(sub_state_file)
     if not sub_state:
         decision = compact_worker_decision(
             action="block",
@@ -810,12 +934,29 @@ def analyze_sub_coord_failure(args: argparse.Namespace) -> int:
         result_present = file_has_json(result_file) or bool(worker_state.get("result_present") is True)
         worker_decisions.append((item, worker_state, done_present, result_present))
 
+    now = time.time()
+    stale_seconds = max(int(getattr(args, "worker_stale_seconds", 600) or 0), 60)
+    dead_pid_grace = max(int(getattr(args, "worker_dead_pid_grace_seconds", 60) or 0), 0)
+    wait_elapsed = max(int(getattr(args, "wait_elapsed_seconds", 0) or 0), 0)
+    max_wait = max(int(getattr(args, "max_wait_seconds", 3600) or 0), 0)
+
     for worker, worker_state, done_present, result_present in worker_decisions:
         state_name = worker_state.get("state")
-        if state_name in LIVE_WORKER_STATES and not (done_present and result_present):
+        if state_name not in LIVE_WORKER_STATES or (done_present and result_present):
+            continue
+        liveness = worker_liveness(
+            worker,
+            worker_state,
+            now=now,
+            stale_seconds=stale_seconds,
+            dead_pid_grace_seconds=dead_pid_grace,
+        )
+        if not liveness["alive"]:
+            # The worker died with its sub-coordinator; its state file is a
+            # frozen snapshot, not a live claim. Recover instead of waiting.
             decision = compact_worker_decision(
-                action="wait_worker",
-                reason="in-flight-worker-running",
+                action="spawn_recovery",
+                reason="in-flight-worker-orphaned",
                 issue=args.issue,
                 issue_dir=issue_dir,
                 sub_state_file=sub_state_file,
@@ -824,9 +965,43 @@ def analyze_sub_coord_failure(args: argparse.Namespace) -> int:
                 worker_state=worker_state,
                 attempt=attempt,
                 max_attempts=max_attempts,
+                liveness=liveness,
             )
             print(json.dumps(decision, sort_keys=True))
             return 0
+        if max_wait and wait_elapsed >= max_wait:
+            # Backstop for a worker that stays demonstrably alive but never
+            # finishes: waiting is never allowed to be unbounded.
+            decision = compact_worker_decision(
+                action="spawn_recovery",
+                reason="in-flight-worker-wait-timeout",
+                issue=args.issue,
+                issue_dir=issue_dir,
+                sub_state_file=sub_state_file,
+                phase=phase,
+                worker=worker,
+                worker_state=worker_state,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                liveness=liveness,
+            )
+            print(json.dumps(decision, sort_keys=True))
+            return 0
+        decision = compact_worker_decision(
+            action="wait_worker",
+            reason="in-flight-worker-running",
+            issue=args.issue,
+            issue_dir=issue_dir,
+            sub_state_file=sub_state_file,
+            phase=phase,
+            worker=worker,
+            worker_state=worker_state,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            liveness=liveness,
+        )
+        print(json.dumps(decision, sort_keys=True))
+        return 0
 
     for worker, worker_state, done_present, result_present in worker_decisions:
         state_name = worker_state.get("state")
@@ -852,7 +1027,11 @@ def analyze_sub_coord_failure(args: argparse.Namespace) -> int:
 
     decision = compact_worker_decision(
         action="spawn_recovery",
-        reason="sub-state-present-no-in-flight-worker",
+        reason=(
+            "sub-coordinator-context-exhausted"
+            if compaction_handoff
+            else "sub-state-present-no-in-flight-worker"
+        ),
         issue=args.issue,
         issue_dir=issue_dir,
         sub_state_file=sub_state_file,
@@ -897,6 +1076,17 @@ def write_sub_coord_recovery_context(args: argparse.Namespace) -> int:
         handle.write("If a worker result is valid, process it and continue from the next phase.\n")
         handle.write("Never rerun a phase that already has a valid result artifact.\n")
         handle.write("If a worker failed without a valid result, apply the existing worker artifact recovery contract.\n\n")
+        if args.reason == "in-flight-worker-orphaned":
+            handle.write(
+                "The in-flight worker recorded in sub-state.json was orphaned: its dispatcher died with your\n"
+                "predecessor, so its state file is a frozen snapshot and its `state` field is not a live claim.\n"
+                "Treat that worker as dead. Re-dispatch the phase unless a valid result artifact already exists.\n\n"
+            )
+        if args.reason == "sub-coordinator-context-exhausted":
+            handle.write(
+                "Your predecessor halted for a compaction handoff after reaching its context budget. That is not a\n"
+                "failure and nothing needs repairing: you have a fresh context window. Resume the persisted phase.\n\n"
+            )
         handle.write(
             "Preserve the full original issue scope, acceptance criteria, verification commands, and recovery artifact paths in every worker retry payload.\n\n"
         )
@@ -914,7 +1104,13 @@ def mark_sub_coord_recovery_started(args: argparse.Namespace) -> int:
         original_context = entry.get("context_file") or entry.get("sub_coord_context_file") or ""
         if original_context:
             entry["sub_coord_original_context_file"] = original_context
-    entry["sub_coord_recovery_attempts"] = int(args.attempt)
+    # A compaction handoff spends the handoff budget, not the failure budget —
+    # the analyzer derives the attempt number from whichever counter applies, so
+    # the write has to land on the same one.
+    if args.reason == "sub-coordinator-context-exhausted":
+        entry["sub_coord_compaction_handoffs"] = int(args.attempt)
+    else:
+        entry["sub_coord_recovery_attempts"] = int(args.attempt)
     entry["sub_coord_recovery_last_reason"] = args.reason
     entry["sub_coord_recovery_context_file"] = args.context_file
     save_json(args.state_file, state)
@@ -1040,6 +1236,7 @@ def requeue_issue(args: argparse.Namespace) -> int:
     entry["blocking_reasons"] = []
     entry["requeued_at"] = timestamp
     entry["sub_coord_recovery_attempts"] = 0
+    entry["sub_coord_compaction_handoffs"] = 0
     if getattr(args, "reason", ""):
         entry["manual_requeue_reason"] = args.reason
     if archived:
@@ -1104,6 +1301,57 @@ def issue_stage(entry: dict[str, Any], completed: set[int]) -> str:
             return phase
         return "running"
     return str(status or "unknown")
+
+
+def unreachable_issues(args: argparse.Namespace) -> int:
+    """Print `issue:root[,root]` pairs for every issue that can never become
+    ready, because a dependency reached a terminal non-completed state.
+
+    Only `completed` satisfies a dependency, so a `failed-review` / `blocked` /
+    `merge_failed` issue silently strands its whole downstream cone: those
+    dependents just sit at `pending` and the heartbeat keeps counting them as
+    work-in-hand while the pool drains to empty. That produced a run which
+    finished with six issues never dispatched and no signal explaining why.
+    Attribution is transitive, and roots are the terminal issues actually to
+    blame — not the intermediate dependents that merely inherited the block."""
+    state = load_json(args.state_file)
+    registry = state.get("issue_registry", {})
+    terminal_dead = {
+        str(key)
+        for key, entry in registry.items()
+        if isinstance(entry, dict)
+        and str(entry.get("status") or "") in {"failed-review", "blocked", "merge_failed", "failed-merge"}
+    }
+    if not terminal_dead:
+        print("")
+        return 0
+
+    roots: dict[str, set[str]] = {}
+    # Iterate to a fixed point so a dependent two or more hops downstream of the
+    # terminal issue is attributed to the same root rather than being missed.
+    changed = True
+    while changed:
+        changed = False
+        for key, entry in registry.items():
+            if not isinstance(entry, dict) or str(entry.get("status") or "") not in {"pending", "waiting"}:
+                continue
+            blame: set[str] = set()
+            for dep in entry.get("deps", []) or []:
+                dep_key = str(dep)
+                if dep_key in terminal_dead:
+                    blame.add(dep_key)
+                elif dep_key in roots:
+                    blame |= roots[dep_key]
+            if blame and blame != roots.get(str(key)):
+                roots[str(key)] = blame
+                changed = True
+
+    pairs = [
+        f"{issue}:{','.join(sorted(blame, key=lambda v: int(v) if v.isdigit() else 0))}"
+        for issue, blame in sorted(roots.items(), key=lambda item: int(item[0]) if item[0].isdigit() else 0)
+    ]
+    print(";".join(pairs))
+    return 0
 
 
 def status_board(args: argparse.Namespace) -> int:
@@ -1189,6 +1437,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub_analysis.add_argument("--issue", required=True)
     sub_analysis.add_argument("--report-file", required=True)
     sub_analysis.add_argument("--max-attempts", type=int, default=2)
+    sub_analysis.add_argument("--max-compaction-handoffs", type=int, default=6)
+    # A live dispatcher rewrites its worker state file every poll (~20s), so
+    # silence beyond this means the dispatcher itself is gone and the file's
+    # "running" is stale. Floor of 60s inside the analyzer.
+    sub_analysis.add_argument("--worker-stale-seconds", type=int, default=600)
+    sub_analysis.add_argument("--worker-dead-pid-grace-seconds", type=int, default=60)
+    sub_analysis.add_argument("--wait-elapsed-seconds", type=int, default=0)
+    sub_analysis.add_argument("--max-wait-seconds", type=int, default=3600)
     sub_analysis.set_defaults(func=analyze_sub_coord_failure)
 
     sub_recovery_context = subparsers.add_parser("write-sub-coord-recovery-context")
@@ -1247,6 +1503,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_state_file(board)
     board.add_argument("--oneline", action="store_true", default=False)
     board.set_defaults(func=status_board)
+
+    unreachable = subparsers.add_parser("unreachable-issues")
+    add_state_file(unreachable)
+    unreachable.set_defaults(func=unreachable_issues)
 
     return parser
 

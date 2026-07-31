@@ -168,6 +168,10 @@ Provide a task summary before execution. All other inputs are optional overrides
 | `PARALLEL_JOBS` | `4` | Rolling pool size. Freed slots fill immediately. Set to `1` for sequential. |
 | `POOL_HEARTBEAT_SECONDS` | `60` | Cadence of the pool runner's `STATUS|type=pool-heartbeat` liveness line (per-status counts + active pool size) |
 | `MAX_SPAWN_BOOTSTRAP_ATTEMPTS` | `3` | Consecutive failed spawn attempts before the pool runner finalizes an issue as terminal instead of retrying |
+| `RUN_WITH_IT_WORKER_STALE_SECONDS` | `600` | A worker state file untouched this long is treated as an orphaned snapshot, not a running worker. A live dispatcher rewrites it every poll (~20s), so silence this long means the dispatcher died. Floored at 60. |
+| `MAX_WORKER_WAIT_SECONDS` | `3600` | Ceiling on waiting for one in-flight worker after its Sub-Coordinator exits, even while the worker still looks alive. `0` disables the ceiling — the staleness bound is then the only backstop. |
+| `MAX_SUB_COORD_COMPACTION_HANDOFFS` | `6` | Context-budget handoffs allowed per issue. Budgeted apart from `MAX_SUB_COORD_RECOVERY_ATTEMPTS` because a compaction stop is a contracted handoff, not a failure. |
+| `WAIT_STATUS_INTERVAL_SECONDS` | `300` | Minimum gap between repeats of an unchanged `sub-coord-recovery-wait` line. Changes in worker/role/reason always emit. |
 
 ## Automatic Worker Model Matrix
 
@@ -846,6 +850,8 @@ Emit parseable one-line status messages:
 - pool reattached: `STATUS|type=pool-reattached|count=<n>|state_file=<path>`
 - sub-coordinator reattach: `STATUS|type=sub-coord-reattach|issue=<n>|pid=<pid>|identity=<live|stale|dead>|report_file=<path>` — `stale` means the recorded PID is alive but its command line no longer matches a dispatcher (recycled PID); it is never adopted and enters exit analysis
 - pool admission deferred: `STATUS|type=pool-admission-deferred|count=<n>|deferrals=<issue:reason,...>`
+- pool unreachable: `STATUS|type=pool-unreachable|count=<n>|unreachable=<issue:root,root;...>` — issues that can never become ready because a dependency ended terminal-but-not-completed. `root` names the terminal issue to blame, attributed transitively. Repeated with `|final=1` when the pool drains, so a run that ends early always says which failures stranded what.
+- sub-coordinator recovery wait: `STATUS|type=sub-coord-recovery-wait|issue=<n>|role=<role>|worker_state=<state>|state_file=<path>|reason=in-flight-worker-running|waited_seconds=<n>|worker_age_seconds=<n>|max_wait_seconds=<n>` — throttled to `WAIT_STATUS_INTERVAL_SECONDS`; `worker_age_seconds` is how long since any of that worker's artifacts moved
 - pool empty: `STATUS|type=pool-empty|pending_remaining=<n>`
 - merge recovery queued: `STATUS|type=merge-recovery|issue=<n>|report_file=<path>|state=<started|completed|failed-merge|blocked>`
 - memory refresh: `STATUS|type=memory-refresh|state_file=.run-with-it/main-state.json|tasks_loaded=<n>|completed=<n>|pending=<n>|failed=<n>`

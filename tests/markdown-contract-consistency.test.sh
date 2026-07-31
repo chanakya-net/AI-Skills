@@ -193,6 +193,42 @@ assert_contains "assets/sub-coordinator-prompt.md" 'ISSUE_BASE_SHA:-$(git -C "$I
 assert_not_contains "assets/sub-coordinator-prompt.md" 'or `files_changed` 2–4' \
   "overlapping gray-zone file-count range must be gone"
 
+# --- Out-of-scope gate attribution (shared repo-global gates) ---
+# Slices that split one repo-global gate each fail it alone. Reporting every
+# slice as failed-review terminates all of them and strands their dependents
+# even though the scoped work was sound, so attribution is required first.
+
+assert_twins_contain "assets/sub-coordinator-prompt.md" "assets/coordinator-rules.md" \
+  'out-of-scope-gate-failure' \
+  "gate-attribution blocking reason must be documented in both twins"
+assert_contains "assets/sub-coordinator-prompt.md" 'Out-of-Scope Gate Rule' \
+  "sub-coordinator must carry the gate attribution rule"
+assert_contains "assets/sub-coordinator-prompt.md" 'STATUS|type=gate-attribution' \
+  "gate attribution must be observable on the status bus"
+assert_contains "assets/sub-coordinator-prompt.md" 'fail closed' \
+  "unclear gate attribution must fail closed onto this issue"
+assert_contains "assets/coordinator-rules.md" 'Out-of-Scope Gate Rule' \
+  "coordinator-rules must carry the gate attribution rule"
+
+# --- Compaction handoff is unattended-safe and separately budgeted ---
+
+assert_contains "assets/sub-coordinator-prompt.md" '"compaction_requested": true' \
+  "compaction handoff must persist the flag the control plane keys on"
+assert_contains "assets/sub-coordinator-prompt.md" 'MAX_SUB_COORD_COMPACTION_HANDOFFS' \
+  "compaction handoff must document its own budget"
+assert_not_contains "assets/sub-coordinator-prompt.md" '**Stop** and wait for the user.' \
+  "unattended runs have no user to wait for; the pool recovers the handoff"
+
+# --- Unreachable-issue reporting reaches the operator ---
+
+assert_twins_contain "skills/run-with-it/SKILL.md" "assets/main-orchestrator-rules.md" \
+  'pool-unreachable' \
+  "stranded-dependent reporting must be documented in both twins"
+assert_contains "skills/run-with-it/SKILL.md" 'MAX_WORKER_WAIT_SECONDS' \
+  "skill must document the in-flight worker wait ceiling"
+assert_contains "skills/run-with-it/SKILL.md" 'RUN_WITH_IT_WORKER_STALE_SECONDS' \
+  "skill must document the worker staleness bound"
+
 # --- Result ---
 
 if [ "$FAILURES" -gt 0 ]; then

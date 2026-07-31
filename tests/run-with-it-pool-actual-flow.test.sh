@@ -166,6 +166,26 @@ JSON
   ) >/dev/null 2>&1 &
   printf 'STATUS|type=heartbeat|issue=%s|role=sub-coord|phase=modify|progress=fake failure after worker spawn\n' "$issue"
   exit 1
+elif [[ "$outcome" == "sub_coord_orphan" ]]; then
+  # Sub-coordinator dies mid-flight and its worker dies with it. The worker
+  # state file is left frozen at state=running and is never touched again —
+  # exactly the shape that wedged a real run for 8.5 hours. Backdate it so the
+  # staleness bound applies immediately instead of after the 60s floor.
+  issue_dir="$(dirname "$report_file")"
+  worker_dir="$issue_dir/workers/modify"
+  mkdir -p "$worker_dir"
+  worker_state="$worker_dir/cycle-1.state.json"
+  worker_done="$worker_dir/cycle-1.done"
+  worker_result="$worker_dir/cycle-1-result.json"
+  cat > "$issue_dir/sub-state.json" <<JSON
+{"schema_version":1,"issue_number":$issue,"phase":"modify","in_flight_agents":[{"role":"modify","cycle":1,"pid":999,"agent":"fake-sub","model":"fake-model","selection_reason":"test","log_file":"$worker_dir/cycle-1.log","done_file":"$worker_done","result_file":"$worker_result","state_file":"$worker_state","started_at":"2026-05-30T00:00:00Z"}],"review_history":[],"updated_at":"2026-05-30T00:00:00Z"}
+JSON
+  cat > "$worker_state" <<JSON
+{"schema_version":1,"issue":"$issue","role":"modify","cycle":"1","state":"running","alive":true,"done":false,"result_present":false,"updated_at":"2001-01-01T00:00:00Z","state_file":"$worker_state","done_file":"$worker_done","result_file":"$worker_result"}
+JSON
+  touch -t 200101010000 "$worker_state"
+  printf 'STATUS|type=heartbeat|issue=%s|role=sub-coord|phase=modify|progress=fake death orphaning worker\n' "$issue"
+  exit 1
 elif [[ "$role" == "merge-recovery" ]]; then
   printf 'STATUS|type=heartbeat|issue=%s|role=merge-recovery|phase=resolving|progress=fake recovery\n' "$issue"
   printf '{"schema_version":1,"issue_number":%s,"outcome":"completed","summary":"fake recovery completed","feature_branch":"Maestro/smoke-fox","issue_branch":"Maestro/smoke-fox/issue-%s","merge_sha":"fake-recovery-%s","files_modified":[{"path":"shared.txt","lines_added":1,"lines_deleted":1}],"verification":{"passed":true,"commands_run":["fake verify"],"evidence":"fake recovery passed"},"blocking_reasons":[]}\n' "$issue" "$issue" "$issue" > "$report_file"
@@ -428,6 +448,47 @@ assert_file_contains "$RECOVERY_PROJECT/.run-with-it/status/events.log" "STATUS|
 assert_file_contains "$RECOVERY_PROJECT/.run-with-it/status/events.log" "STATUS|type=sub-coord-recovery-spawn|issue=21|attempt=1" "events log records recovery sub-coordinator spawn"
 assert_file_contains "$RECOVERY_PROJECT/.run-with-it/status/events.log" "STATUS|type=sub-coord-complete|issue=21|outcome=completed" "events log records recovered issue completion"
 assert_file_contains "$RECOVERY_PROJECT/.run-with-it/issues/21/sub-coordinator-recovery-1.log" "STATUS|type=sub-resume" "recovery sub-coordinator resumes from saved state"
+
+# Orphaned in-flight worker: the sub-coordinator dies and takes its worker's
+# dispatcher with it, freezing the worker state file at state=running forever.
+# Before liveness gating the supervisor waited on that frozen field for as long
+# as the run lasted, so this scenario runs under a watchdog: a regression hangs
+# the pool, and the watchdog turns that hang into a clear failure.
+ORPHAN_ROOT="$WORK_DIR/orphan"
+make_fixture "$ORPHAN_ROOT"
+ORPHAN_PROJECT="$ORPHAN_ROOT/project"
+write_context "$ORPHAN_PROJECT" 61 sub_coord_orphan
+cat > "$ORPHAN_PROJECT/.run-with-it/main-state.json" <<JSON
+{
+  "schema_version": 4,
+  "execution_plan": { "parallel_jobs": 1, "topo_order": [61] },
+  "issue_registry": {
+    "61": { "status": "pending", "deps": [], "context_file": "$ORPHAN_PROJECT/.run-with-it/contexts/sub-61.md" }
+  },
+  "active_pool_issues": [],
+  "completed_summaries": [],
+  "ledger_rows": []
+}
+JSON
+run_pool "$ORPHAN_ROOT" 1 &
+ORPHAN_POOL_PID=$!
+orphan_waited=0
+while kill -0 "$ORPHAN_POOL_PID" 2>/dev/null; do
+  if [[ "$orphan_waited" -ge 90 ]]; then
+    kill -9 "$ORPHAN_POOL_PID" 2>/dev/null || true
+    fail "pool livelocked waiting on an orphaned in-flight worker (no recovery within 90s)"
+  fi
+  sleep 1
+  orphan_waited=$((orphan_waited + 1))
+done
+wait "$ORPHAN_POOL_PID" 2>/dev/null || true
+orphan_events="$ORPHAN_PROJECT/.run-with-it/status/events.log"
+assert_json_status "$ORPHAN_PROJECT/.run-with-it/main-state.json" 61 completed
+assert_file_contains "$orphan_events" "reason=in-flight-worker-orphaned" "pool classifies the frozen worker state as orphaned rather than running"
+assert_file_contains "$orphan_events" "STATUS|type=sub-coord-recovery-spawn|issue=61|attempt=1" "pool recovers the issue instead of waiting on a dead worker"
+if grep -Fq "STATUS|type=sub-coord-recovery-wait|issue=61" "$orphan_events"; then
+  fail "pool must not wait on a worker whose state file is provably stale"
+fi
 
 # Late-context rolling pool: an issue whose context file does not exist yet is
 # waiting-context — the pool must keep running, surface the wait, and dispatch

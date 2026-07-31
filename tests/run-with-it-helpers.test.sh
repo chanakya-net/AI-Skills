@@ -349,6 +349,166 @@ grep -Fq "Do not restart from scratch." "$SUB_RECOVERY_CONTEXT" || fail "sub-coo
 grep -Fq "Preserve the full original issue scope, acceptance criteria, verification commands, and recovery artifact paths in every worker retry payload." "$SUB_RECOVERY_CONTEXT" || fail "sub-coordinator recovery context preserves full retry context contract"
 grep -Fq "# issue 5 context" "$SUB_RECOVERY_CONTEXT" || fail "sub-coordinator recovery context includes original context"
 
+# --- Orphaned in-flight worker must never produce an unbounded wait ---------
+# A worker state file is a snapshot its dispatcher rewrites every poll. When the
+# sub-coordinator dies it takes the dispatcher with it, freezing the file at
+# state=running forever. Trusting that frozen field wedged a real run for 8.5h.
+ORPHAN_WORKER_STATE="$WORK_DIR/issues/5/workers/modify/cycle-1.state.json"
+restore_live_worker_fixture() {
+  rm -f "$WORK_DIR/issues/5/workers/modify/cycle-1.done" \
+        "$WORK_DIR/issues/5/workers/modify/cycle-1-result.json"
+  cat > "$ORPHAN_WORKER_STATE" <<JSON
+{
+  "schema_version": 1,
+  "issue": "5",
+  "role": "modify",
+  "cycle": "1",
+  "state": "running",
+  "alive": true,
+  "done": false,
+  "result_present": false,
+  "runner_pid": 4242,
+  "dispatcher_pid": 4243,
+  "state_file": "$ORPHAN_WORKER_STATE",
+  "done_file": "$WORK_DIR/issues/5/workers/modify/cycle-1.done",
+  "result_file": "$WORK_DIR/issues/5/workers/modify/cycle-1-result.json"
+}
+JSON
+}
+
+restore_live_worker_fixture
+# Fresh snapshot (just written) still means "wait" — the fix must not turn every
+# genuinely running worker into a spurious recovery.
+fresh="$(python3 "$STATE_HELPER" analyze-sub-coord-failure --state-file "$SUB_RECOVERY_STATE_FILE" \
+  --issue 5 --report-file "$WORK_DIR/issues/5/report.json" --worker-stale-seconds 600)"
+python3 - "$fresh" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload["action"] == "wait_worker", payload
+assert payload["reason"] == "in-flight-worker-running", payload
+assert payload["worker_liveness"] == "fresh", payload
+PY
+
+# Same file, aged past the staleness bound: the dispatcher that maintains it is
+# provably gone, so the "running" claim is stale and recovery must be spawned.
+touch -t 200101010000 "$ORPHAN_WORKER_STATE"
+stale="$(python3 "$STATE_HELPER" analyze-sub-coord-failure --state-file "$SUB_RECOVERY_STATE_FILE" \
+  --issue 5 --report-file "$WORK_DIR/issues/5/report.json" --worker-stale-seconds 600)"
+python3 - "$stale" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload["action"] == "spawn_recovery", payload
+assert payload["reason"] == "in-flight-worker-orphaned", payload
+assert payload["worker_liveness"] == "state-file-stale", payload
+assert payload["worker_age_seconds"] > 600, payload
+PY
+
+# A worker that stays demonstrably fresh still may not be waited on forever.
+restore_live_worker_fixture
+timeout_decision="$(python3 "$STATE_HELPER" analyze-sub-coord-failure --state-file "$SUB_RECOVERY_STATE_FILE" \
+  --issue 5 --report-file "$WORK_DIR/issues/5/report.json" \
+  --worker-stale-seconds 600 --wait-elapsed-seconds 4000 --max-wait-seconds 3600)"
+python3 - "$timeout_decision" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload["action"] == "spawn_recovery", payload
+assert payload["reason"] == "in-flight-worker-wait-timeout", payload
+PY
+
+python3 "$STATE_HELPER" write-sub-coord-recovery-context \
+  --state-file "$SUB_RECOVERY_STATE_FILE" --issue 5 \
+  --context-file "$SUB_RECOVERY_CONTEXT" --attempt 1 --reason "in-flight-worker-orphaned"
+grep -Fq "Treat that worker as dead." "$SUB_RECOVERY_CONTEXT" || fail "orphan recovery context tells the successor the frozen worker is dead"
+
+# --- Compaction handoff is budgeted apart from failure recovery -------------
+# A sub-coordinator that halts on its context budget did what it was told; that
+# must not consume the (deliberately tiny) failure-recovery budget.
+python3 - "$WORK_DIR/issues/5/sub-state.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+payload = json.load(open(path))
+payload["compaction_requested"] = True
+payload["in_flight_agents"] = []
+json.dump(payload, open(path, "w"), indent=2)
+PY
+python3 - "$SUB_RECOVERY_STATE_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+payload = json.load(open(path))
+payload["issue_registry"]["5"]["sub_coord_recovery_attempts"] = 2
+json.dump(payload, open(path, "w"), indent=2)
+PY
+compaction="$(python3 "$STATE_HELPER" analyze-sub-coord-failure --state-file "$SUB_RECOVERY_STATE_FILE" \
+  --issue 5 --report-file "$WORK_DIR/issues/5/report.json" --max-attempts 2 --max-compaction-handoffs 6)"
+python3 - "$compaction" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload["action"] == "spawn_recovery", payload
+assert payload["reason"] == "sub-coordinator-context-exhausted", payload
+# Failure budget is already spent (2/2); the handoff budget is what applies.
+assert payload["recovery_attempt"] == 1, payload
+assert payload["max_recovery_attempts"] == 6, payload
+PY
+
+python3 "$STATE_HELPER" mark-sub-coord-recovery-started \
+  --state-file "$SUB_RECOVERY_STATE_FILE" --issue 5 --attempt 1 \
+  --reason "sub-coordinator-context-exhausted" --context-file "$SUB_RECOVERY_CONTEXT"
+python3 - "$SUB_RECOVERY_STATE_FILE" <<'PY'
+import json, sys
+entry = json.load(open(sys.argv[1]))["issue_registry"]["5"]
+assert entry["sub_coord_compaction_handoffs"] == 1, entry
+assert entry["sub_coord_recovery_attempts"] == 2, entry  # failure budget untouched
+PY
+
+python3 - "$SUB_RECOVERY_STATE_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+payload = json.load(open(path))
+payload["issue_registry"]["5"]["sub_coord_compaction_handoffs"] = 6
+json.dump(payload, open(path, "w"), indent=2)
+PY
+exhausted="$(python3 "$STATE_HELPER" analyze-sub-coord-failure --state-file "$SUB_RECOVERY_STATE_FILE" \
+  --issue 5 --report-file "$WORK_DIR/issues/5/report.json" --max-compaction-handoffs 6)"
+python3 - "$exhausted" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload["action"] == "block", payload
+assert payload["reason"] == "sub-coordinator-compaction-handoffs-exhausted", payload
+PY
+
+# --- Terminal non-completed issues must not silently strand their cone ------
+UNREACHABLE_STATE="$WORK_DIR/unreachable-state.json"
+cat > "$UNREACHABLE_STATE" <<'JSON'
+{
+  "schema_version": 4,
+  "execution_plan": {"topo_order": [39, 40, 41, 42, 33]},
+  "issue_registry": {
+    "39": {"status": "failed-review", "deps": []},
+    "40": {"status": "failed-review", "deps": []},
+    "41": {"status": "pending", "deps": [39, 40]},
+    "42": {"status": "pending", "deps": [41]},
+    "33": {"status": "pending", "deps": []}
+  }
+}
+JSON
+unreachable="$(python3 "$STATE_HELPER" unreachable-issues --state-file "$UNREACHABLE_STATE")"
+assert_contains "$unreachable" "41:39,40" "unreachable names the direct dependents and their terminal roots"
+assert_contains "$unreachable" "42:39,40" "unreachable attributes transitively to the terminal roots, not the middle issue"
+case "$unreachable" in *"33:"*) fail "issue with satisfiable dependencies must not be reported unreachable" ;; esac
+
+cat > "$UNREACHABLE_STATE" <<'JSON'
+{
+  "schema_version": 4,
+  "execution_plan": {"topo_order": [1, 2]},
+  "issue_registry": {
+    "1": {"status": "completed", "deps": []},
+    "2": {"status": "pending", "deps": [1]}
+  }
+}
+JSON
+assert_eq "$(python3 "$STATE_HELPER" unreachable-issues --state-file "$UNREACHABLE_STATE")" "" \
+  "healthy run reports nothing unreachable"
+
 comment="$(python3 "$GITHUB_HELPER" render-comment --outcome completed --report-file "$REPORT_FILE")"
 assert_contains "$comment" "## Status" "GitHub helper renders status section"
 assert_contains "$comment" "helper completed" "GitHub helper includes report summary"

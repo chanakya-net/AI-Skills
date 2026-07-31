@@ -10,6 +10,17 @@ param(
     [int]$PollSeconds = $(if ($env:STATUS_POLL_SECONDS) { [int]$env:STATUS_POLL_SECONDS } else { 10 }),
     [int]$TimeoutSeconds = $(if ($env:SUB_COORD_TIMEOUT_SECONDS) { [int]$env:SUB_COORD_TIMEOUT_SECONDS } else { 3600 }),
     [int]$MaxSubCoordRecoveryAttempts = $(if ($env:MAX_SUB_COORD_RECOVERY_ATTEMPTS) { [int]$env:MAX_SUB_COORD_RECOVERY_ATTEMPTS } else { 2 }),
+    # A compaction handoff is a contracted stop, not a failure, so it gets its
+    # own (larger) budget instead of burning the failure-recovery attempts.
+    [int]$MaxSubCoordCompactionHandoffs = $(if ($env:MAX_SUB_COORD_COMPACTION_HANDOFFS) { [int]$env:MAX_SUB_COORD_COMPACTION_HANDOFFS } else { 6 }),
+    # Ceiling on how long the supervisor may wait for one orphan-suspect worker
+    # before recovering the issue regardless. Waiting is never unbounded.
+    [int]$MaxWorkerWaitSeconds = $(if ($env:MAX_WORKER_WAIT_SECONDS) { [int]$env:MAX_WORKER_WAIT_SECONDS } else { 3600 }),
+    [int]$WorkerStaleSeconds = $(if ($env:RUN_WITH_IT_WORKER_STALE_SECONDS) { [int]$env:RUN_WITH_IT_WORKER_STALE_SECONDS } else { 600 }),
+    # Repeating one unchanged wait line every poll produced ~6k identical
+    # entries and a 1 MB status log in a single stuck run; re-emit on change or
+    # on this interval instead.
+    [int]$WaitStatusIntervalSeconds = $(if ($env:WAIT_STATUS_INTERVAL_SECONDS) { [int]$env:WAIT_STATUS_INTERVAL_SECONDS } else { 300 }),
     [int]$MaxSpawnBootstrapAttempts = $(if ($env:MAX_SPAWN_BOOTSTRAP_ATTEMPTS) { [int]$env:MAX_SPAWN_BOOTSTRAP_ATTEMPTS } else { 3 }),
     [int]$HeartbeatSeconds = $(if ($env:POOL_HEARTBEAT_SECONDS) { [int]$env:POOL_HEARTBEAT_SECONDS } else { 60 }),
     [string]$PoolStateFile = "",
@@ -233,15 +244,27 @@ function Finalize-Issue([string]$issue, [string]$reportFile) {
     return [string](Invoke-StateHelper @("finalize-issue", "--state-file", $StateFile, "--issue", $issue, "--report-file", $reportFile))
 }
 
-function Analyze-SubCoordFailure([string]$issue, [string]$reportFile) {
+function Analyze-SubCoordFailure([string]$issue, [string]$reportFile, [int]$waitElapsedSeconds = 0) {
     $json = Invoke-StateHelper @(
         "analyze-sub-coord-failure",
         "--state-file", $StateFile,
         "--issue", $issue,
         "--report-file", $reportFile,
-        "--max-attempts", "$MaxSubCoordRecoveryAttempts"
+        "--max-attempts", "$MaxSubCoordRecoveryAttempts",
+        "--max-compaction-handoffs", "$MaxSubCoordCompactionHandoffs",
+        "--worker-stale-seconds", "$WorkerStaleSeconds",
+        "--wait-elapsed-seconds", "$waitElapsedSeconds",
+        "--max-wait-seconds", "$MaxWorkerWaitSeconds"
     )
     return (($json -join "`n") | ConvertFrom-Json)
+}
+
+function Get-UnreachableIssues {
+    try {
+        return [string](Invoke-StateHelper @("unreachable-issues", "--state-file", $StateFile))
+    } catch {
+        return ""
+    }
 }
 
 function Write-SubCoordRecoveryContext([string]$issue, [string]$contextFile, [int]$attempt, [string]$reason) {
@@ -388,6 +411,9 @@ if ($DryRun) {
 
 $pool = @{}
 $script:spawnBootstrapAttempts = @{}
+$script:waitSince = @{}
+$script:waitSignature = @{}
+$script:waitEmitted = @{}
 
 function Spawn-Issue([string]$issue) {
     $contextFile = Get-ContextFileFor $issue
@@ -449,13 +475,30 @@ function Finalize-PoolIssue([string]$issue, [string]$reportFile, $entry) {
 
 function Handle-SubCoordExit([string]$issue, $entry) {
     $reportFile = $entry.report_file
-    $decision = Analyze-SubCoordFailure $issue $reportFile
+    $now = [int][double]::Parse((Get-Date -UFormat %s))
+    $waitSince = if ($script:waitSince.ContainsKey($issue)) { [int]$script:waitSince[$issue] } else { $now }
+    $elapsed = [Math]::Max($now - $waitSince, 0)
+    $decision = Analyze-SubCoordFailure $issue $reportFile $elapsed
     $action = [string]$decision.action
     $reason = [string]$decision.reason
     if ($action -eq "wait_worker") {
-        Write-Status "STATUS|type=sub-coord-recovery-wait|issue=$issue|role=$($decision.worker_role)|worker_state=$($decision.worker_state)|state_file=$($decision.worker_state_file)|reason=$reason"
+        # Start (or keep) the wait clock: the analyzer needs the elapsed value
+        # to enforce MaxWorkerWaitSeconds, and without a persisted start the
+        # wait can never time out.
+        $script:waitSince[$issue] = $waitSince
+        $signature = "$($decision.worker_role)|$($decision.worker_state)|$($decision.worker_state_file)|$reason"
+        $lastSignature = if ($script:waitSignature.ContainsKey($issue)) { [string]$script:waitSignature[$issue] } else { "" }
+        $lastEmit = if ($script:waitEmitted.ContainsKey($issue)) { [int]$script:waitEmitted[$issue] } else { 0 }
+        if ($signature -ne $lastSignature -or $lastEmit -eq 0 -or ($now - $lastEmit) -ge $WaitStatusIntervalSeconds) {
+            Write-Status "STATUS|type=sub-coord-recovery-wait|issue=$issue|role=$($decision.worker_role)|worker_state=$($decision.worker_state)|state_file=$($decision.worker_state_file)|reason=$reason|waited_seconds=$elapsed|worker_age_seconds=$($decision.worker_age_seconds)|max_wait_seconds=$MaxWorkerWaitSeconds"
+            $script:waitSignature[$issue] = $signature
+            $script:waitEmitted[$issue] = $now
+        }
         return
     }
+    $script:waitSince.Remove($issue) | Out-Null
+    $script:waitSignature.Remove($issue) | Out-Null
+    $script:waitEmitted.Remove($issue) | Out-Null
     if ($action -eq "spawn_recovery") {
         Spawn-RecoveryIssue $issue $decision $entry
         return
@@ -568,6 +611,21 @@ function Emit-AdmissionDeferrals {
     $script:lastAdmissionDeferrals = $deferrals
 }
 
+# Only "completed" satisfies a dependency, so an issue that ends failed-review,
+# blocked, or merge_failed silently strands every issue downstream of it: they
+# stay "pending" forever while the heartbeat still counts them as work in hand.
+# Name them, and name the terminal issue responsible, so a drained pool reads as
+# "6 issues unreachable behind #39,#40" instead of an unexplained early finish.
+$lastUnreachable = ""
+function Emit-Unreachable {
+    $unreachable = (Get-UnreachableIssues).Trim()
+    if ($unreachable -and $unreachable -ne $script:lastUnreachable) {
+        $count = @($unreachable -split ";").Count
+        Write-Status "STATUS|type=pool-unreachable|count=$count|unreachable=$unreachable"
+    }
+    $script:lastUnreachable = $unreachable
+}
+
 # Re-adopt in-flight issues from a previous pool supervisor (e.g. one killed by
 # a bounded tool-call timeout). Live dispatchers keep running unsupervised; the
 # monitor loop below re-attaches to them, and dead ones flow through the normal
@@ -634,6 +692,7 @@ while ($pool.Count -gt 0) {
     }
     $lastWaitingContextCount = "$waitingCount"
     Emit-AdmissionDeferrals
+    Emit-Unreachable
     $heartbeatElapsed += $PollSeconds
     if ($heartbeatElapsed -ge $HeartbeatSeconds) {
         Emit-Heartbeat
@@ -641,4 +700,10 @@ while ($pool.Count -gt 0) {
     }
 }
 
-Write-Status "STATUS|type=pool-empty|state_file=$StateFile"
+$finalUnreachable = (Get-UnreachableIssues).Trim()
+if ($finalUnreachable) {
+    Write-Status "STATUS|type=pool-unreachable|count=$(@($finalUnreachable -split ';').Count)|unreachable=$finalUnreachable|final=1"
+    Write-Status "STATUS|type=pool-empty|state_file=$StateFile|unreachable=$finalUnreachable"
+} else {
+    Write-Status "STATUS|type=pool-empty|state_file=$StateFile"
+}
