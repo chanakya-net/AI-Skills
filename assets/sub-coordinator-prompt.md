@@ -1018,10 +1018,13 @@ The sub-coordinator must track a running context budget estimate and halt for a 
 Maintain `context_bytes_total`: a running sum of UTF-8 byte length of coordinator-visible content. Estimate tokens as `floor(context_bytes_total / 4)`. Resolve `host_context_window` from the active host model's `context_window` in `agent-registry.json`; fall back to `200000` if unavailable.
 
 When `context_tokens_est / host_context_window >= 0.50` (first crossing only):
-1. Persist `$RUN_WITH_IT_ISSUE_DIR/sub-state.json` (schema_version 1; see Appendix D).
-2. Emit: `STATUS|type=compact|action=user-required|state_file=$RUN_WITH_IT_ISSUE_DIR/sub-state.json`
-3. Print host-appropriate compaction instructions (Claude Code: `/compact`; Codex GUI: use UI compact control; GitHub Copilot: use "compact" equivalent).
-4. **Stop** and wait for the user.
+1. Persist `$RUN_WITH_IT_ISSUE_DIR/sub-state.json` (schema_version 1; see Appendix D) with `"compaction_requested": true`. This flag is the control plane's only signal that the exit was a contracted handoff rather than a crash — without it the exit is charged to the failure-recovery budget.
+2. Record every in-flight worker in `in_flight_agents` **before** exiting, with its `state_file`, `done_file`, and `result_file` paths, so your successor can resume instead of re-dispatching completed work.
+3. Emit: `STATUS|type=compact|action=user-required|state_file=$RUN_WITH_IT_ISSUE_DIR/sub-state.json`
+4. Print host-appropriate compaction instructions (Claude Code: `/compact`; Codex GUI: use UI compact control; GitHub Copilot: use "compact" equivalent).
+5. **Stop.** Do not block waiting for a reply: unattended runs have no user at the keyboard. The pool supervisor observes the exit, spawns a recovery Sub-Coordinator with a fresh context window, and hands it your `sub-state.json`. Handoffs are budgeted separately from failures (`MAX_SUB_COORD_COMPACTION_HANDOFFS`, default 6), so stopping on budget is the correct move, not a last resort.
+
+Your exit orphans any worker you launched: its dispatcher is your child and dies with you, freezing that worker's state file mid-flight at `state: "running"`. The control plane re-derives worker liveness from artifact freshness, so a stale snapshot is treated as dead rather than waited on — but only if `in_flight_agents` records the paths above. An unrecorded worker is invisible to recovery.
 
 ### Per-Cycle Steps
 
@@ -1046,8 +1049,26 @@ Evaluate these rules **in order**; the first matching rule decides:
 "Explicit all-tests-pass" means the implementer's report contains a test command **and** a clearly passing result. Absent, partial, timeout, or skipped test output does **not** qualify — in those cases proceed to step 1.
 
 1. Before assembling the reviewer payload, check the implementing or modifying agent's reported verification results:
-   - If verification **actively failed** (tests ran and produced failures), **do not spawn the reviewer** — terminate the issue as `failed-review` with reason `failed-verification`.
+   - If verification **actively failed** (tests ran and produced failures), first **attribute the failure** using the Out-of-Scope Gate Rule below. A failure attributable to this issue's own scope terminates the issue as `failed-review` with reason `failed-verification`, and **no reviewer is spawned**.
    - If verification results are **absent or incomplete**, spawn the reviewer anyway. Include whatever partial verification evidence is available and note the gap.
+
+**Out-of-Scope Gate Rule (required before reporting `failed-verification`)**
+
+Repo-global gates — aggregate coverage thresholds, whole-solution lint, full-suite runs — fail on code the issue does not own. When an issue is one of several slices that together satisfy such a gate, every slice fails it alone, and reporting each as `failed-review` terminates all of them: the work is sound but nothing merges, and every downstream issue is stranded. Attribute before you terminate.
+
+Attribution is required whenever a failing verification command covers paths outside the issue's `ownership_scope`. Decide from the failing units named in the command's own output — failing test names, projects, files, or threshold rows — never from the exit code alone:
+
+| Failing units | Verdict |
+|---|---|
+| Any lie inside `ownership_scope` | This issue's failure. Terminate as `failed-review`, reason `failed-verification`. |
+| All lie outside `ownership_scope`, and every scoped verification command passed | **Not** this issue's failure. Terminate as `blocked` with `blocking_reasons=["out-of-scope-gate-failure"]`. |
+| Attribution is unclear from the output | Treat as this issue's failure — fail closed. |
+
+For the `blocked` verdict, also write into the compact report:
+- `"gate_failure": {"command": "<exact gate command>", "out_of_scope_units": ["<unit>", ...], "owning_issues": [<issue numbers, when known>]}`
+- a summary that states the scoped work passed, names the gate, and names the out-of-scope units holding it down
+
+Emit `STATUS|type=gate-attribution|issue=<n>|command=<gate>|verdict=<in-scope|out-of-scope|unclear>|units=<count>`. Never mark a repo-global gate as passing when it did not pass, and never merge on this path — `blocked` reports the honest outcome and keeps the failure attributable to the issues that actually own it.
 
 2. Assemble a reviewer payload file in this order:
    - The full slice requirements — complete issue body including title, description, requirements, and acceptance criteria

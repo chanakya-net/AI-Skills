@@ -17,6 +17,17 @@ POLL_SECONDS="${STATUS_POLL_SECONDS:-10}"
 HEARTBEAT_SECONDS="${POOL_HEARTBEAT_SECONDS:-60}"
 TIMEOUT_SECONDS="${SUB_COORD_TIMEOUT_SECONDS:-3600}"
 MAX_SUB_COORD_RECOVERY_ATTEMPTS="${MAX_SUB_COORD_RECOVERY_ATTEMPTS:-2}"
+# A compaction handoff is a contracted stop, not a failure, so it gets its own
+# (larger) budget instead of burning the failure-recovery attempts.
+MAX_SUB_COORD_COMPACTION_HANDOFFS="${MAX_SUB_COORD_COMPACTION_HANDOFFS:-6}"
+# Ceiling on how long the supervisor may wait for one orphan-suspect worker
+# before recovering the issue regardless. Waiting is never unbounded.
+MAX_WORKER_WAIT_SECONDS="${MAX_WORKER_WAIT_SECONDS:-3600}"
+WORKER_STALE_SECONDS="${RUN_WITH_IT_WORKER_STALE_SECONDS:-600}"
+# Repeating one unchanged wait line every poll produced ~6k identical entries
+# and a 1 MB status log in a single stuck run; re-emit on change or on this
+# interval instead.
+WAIT_STATUS_INTERVAL_SECONDS="${WAIT_STATUS_INTERVAL_SECONDS:-300}"
 MAX_SPAWN_BOOTSTRAP_ATTEMPTS="${MAX_SPAWN_BOOTSTRAP_ATTEMPTS:-3}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 DRY_RUN=0
@@ -102,6 +113,12 @@ case "$HEARTBEAT_SECONDS" in ''|*[!0-9]*) HEARTBEAT_SECONDS=60 ;; esac
 [ "$HEARTBEAT_SECONDS" -ge 1 ] || HEARTBEAT_SECONDS=60
 case "$MAX_SPAWN_BOOTSTRAP_ATTEMPTS" in ''|*[!0-9]*) MAX_SPAWN_BOOTSTRAP_ATTEMPTS=3 ;; esac
 [ "$MAX_SPAWN_BOOTSTRAP_ATTEMPTS" -ge 1 ] || MAX_SPAWN_BOOTSTRAP_ATTEMPTS=3
+case "$MAX_SUB_COORD_COMPACTION_HANDOFFS" in ''|*[!0-9]*) MAX_SUB_COORD_COMPACTION_HANDOFFS=6 ;; esac
+case "$MAX_WORKER_WAIT_SECONDS" in ''|*[!0-9]*) MAX_WORKER_WAIT_SECONDS=3600 ;; esac
+case "$WORKER_STALE_SECONDS" in ''|*[!0-9]*) WORKER_STALE_SECONDS=600 ;; esac
+[ "$WORKER_STALE_SECONDS" -ge 60 ] || WORKER_STALE_SECONDS=60
+case "$WAIT_STATUS_INTERVAL_SECONDS" in ''|*[!0-9]*) WAIT_STATUS_INTERVAL_SECONDS=300 ;; esac
+[ "$WAIT_STATUS_INTERVAL_SECONDS" -ge 1 ] || WAIT_STATUS_INTERVAL_SECONDS=300
 if [ -z "$POOL_STATE_FILE" ]; then
   POOL_STATE_FILE="${RUN_ROOT}/.run-with-it/main/pool.state.json"
 fi
@@ -291,7 +308,15 @@ analyze_sub_coord_failure() {
     --state-file "$STATE_FILE" \
     --issue "$1" \
     --report-file "$2" \
-    --max-attempts "$MAX_SUB_COORD_RECOVERY_ATTEMPTS"
+    --max-attempts "$MAX_SUB_COORD_RECOVERY_ATTEMPTS" \
+    --max-compaction-handoffs "$MAX_SUB_COORD_COMPACTION_HANDOFFS" \
+    --worker-stale-seconds "$WORKER_STALE_SECONDS" \
+    --wait-elapsed-seconds "${3:-0}" \
+    --max-wait-seconds "$MAX_WORKER_WAIT_SECONDS"
+}
+
+unreachable_issues() {
+  "$PYTHON_BIN" "$STATE_HELPER" unreachable-issues --state-file "$STATE_FILE" 2>/dev/null || true
 }
 
 decision_field() {
@@ -540,6 +565,23 @@ emit_admission_deferrals() {
   LAST_ADMISSION_DEFERRALS="$deferrals"
 }
 
+# Only "completed" satisfies a dependency, so an issue that ends failed-review,
+# blocked, or merge_failed silently strands every issue downstream of it: they
+# stay "pending" forever while the heartbeat still counts them as work in hand.
+# Name them, and name the terminal issue responsible, so a drained pool reads as
+# "6 issues unreachable behind #39,#40" instead of an unexplained early finish.
+LAST_UNREACHABLE=""
+
+emit_unreachable() {
+  local unreachable count
+  unreachable="$(unreachable_issues)"
+  if [ -n "$unreachable" ] && [ "$unreachable" != "$LAST_UNREACHABLE" ]; then
+    count="$(printf '%s' "$unreachable" | awk -F';' '{print NF}')"
+    write_status "STATUS|type=pool-unreachable|count=${count}|unreachable=${unreachable}"
+  fi
+  LAST_UNREACHABLE="$unreachable"
+}
+
 # Re-adopt in-flight issues from a previous pool supervisor (e.g. one killed by
 # a bounded tool-call timeout). Live dispatchers keep running unsupervised; the
 # monitor loop below re-attaches to them, and dead ones flow through the normal
@@ -657,18 +699,41 @@ handle_sub_coord_exit() {
   local issue="$1"
   local report_file="$2"
   local decision_json action reason worker_role worker_state worker_state_file
-  decision_json="$(analyze_sub_coord_failure "$issue" "$report_file")"
+  local wait_since now elapsed age signature last_signature last_emit
+  now="$(date +%s)"
+  wait_since="$(pool_get WAITSINCE "$issue")"
+  [ -n "$wait_since" ] || wait_since="$now"
+  elapsed=$((now - wait_since))
+  [ "$elapsed" -ge 0 ] || elapsed=0
+  decision_json="$(analyze_sub_coord_failure "$issue" "$report_file" "$elapsed")"
   action="$(decision_field "$decision_json" action)"
   reason="$(decision_field "$decision_json" reason)"
   case "$action" in
     wait_worker)
+      # Start (or keep) the wait clock: the analyzer needs the elapsed value to
+      # enforce MAX_WORKER_WAIT_SECONDS, and without a persisted start the wait
+      # can never time out.
+      pool_set WAITSINCE "$issue" "$wait_since"
       worker_role="$(decision_field "$decision_json" worker_role)"
       worker_state="$(decision_field "$decision_json" worker_state)"
       worker_state_file="$(decision_field "$decision_json" worker_state_file)"
-      write_status "STATUS|type=sub-coord-recovery-wait|issue=${issue}|role=${worker_role}|worker_state=${worker_state}|state_file=${worker_state_file}|reason=${reason}"
+      age="$(decision_field "$decision_json" worker_age_seconds)"
+      signature="${worker_role}|${worker_state}|${worker_state_file}|${reason}"
+      last_signature="$(pool_get WAITSIG "$issue")"
+      last_emit="$(pool_get WAITEMIT "$issue")"
+      if [ "$signature" != "$last_signature" ] ||
+         [ -z "$last_emit" ] ||
+         [ "$((now - last_emit))" -ge "$WAIT_STATUS_INTERVAL_SECONDS" ]; then
+        write_status "STATUS|type=sub-coord-recovery-wait|issue=${issue}|role=${worker_role}|worker_state=${worker_state}|state_file=${worker_state_file}|reason=${reason}|waited_seconds=${elapsed}|worker_age_seconds=${age}|max_wait_seconds=${MAX_WORKER_WAIT_SECONDS}"
+        pool_set WAITSIG "$issue" "$signature"
+        pool_set WAITEMIT "$issue" "$now"
+      fi
       return 0
       ;;
     spawn_recovery)
+      pool_set WAITSINCE "$issue" ""
+      pool_set WAITSIG "$issue" ""
+      pool_set WAITEMIT "$issue" ""
       spawn_recovery_issue "$issue" "$decision_json"
       return 0
       ;;
@@ -773,6 +838,7 @@ while [ -n "$POOL_ISSUES" ]; do
   fill_free_slots "tick"
   emit_waiting_context_status
   emit_admission_deferrals
+  emit_unreachable
   emit_run_board
   HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + POLL_SECONDS))
   if [ "$HEARTBEAT_ELAPSED" -ge "$HEARTBEAT_SECONDS" ]; then
@@ -781,4 +847,8 @@ while [ -n "$POOL_ISSUES" ]; do
   fi
 done
 
-write_status "STATUS|type=pool-empty|state_file=${STATE_FILE}"
+FINAL_UNREACHABLE="$(unreachable_issues)"
+if [ -n "$FINAL_UNREACHABLE" ]; then
+  write_status "STATUS|type=pool-unreachable|count=$(printf '%s' "$FINAL_UNREACHABLE" | awk -F';' '{print NF}')|unreachable=${FINAL_UNREACHABLE}|final=1"
+fi
+write_status "STATUS|type=pool-empty|state_file=${STATE_FILE}${FINAL_UNREACHABLE:+|unreachable=${FINAL_UNREACHABLE}}"

@@ -95,8 +95,24 @@ assert_file_contains "${POOL_RUNNER}" "type=pool-slot-fill-failed" "pool runner 
 assert_file_contains "${POOL_RUNNER}" "type=pool-slot-fill-abandoned" "pool runner finalizes an issue after bounded spawn failures"
 assert_file_contains "${POOL_RUNNER}" 'MAX_SPAWN_BOOTSTRAP_ATTEMPTS' "pool runner bounds spawn bootstrap retries"
 assert_file_contains "${POOL_RUNNER}" 'if spawn_issue "$queued_issue"; then' "fill_free_slots guards spawn_issue so set -e cannot kill the supervisor"
+
+# --- Recovery wait must be bounded, informative, and not log-flooding -------
+# A frozen worker state file once produced ~6k identical wait lines over 8.5h
+# while the pool made no progress; the wait now carries a clock and a ceiling.
+assert_file_contains "${POOL_RUNNER}" "MAX_WORKER_WAIT_SECONDS" "pool runner bounds how long it waits on one in-flight worker"
+assert_file_contains "${POOL_RUNNER}" "--max-wait-seconds" "pool runner passes the wait ceiling to the analyzer"
+assert_file_contains "${POOL_RUNNER}" "--wait-elapsed-seconds" "pool runner reports elapsed wait so the ceiling can be enforced"
+assert_file_contains "${POOL_RUNNER}" "--worker-stale-seconds" "pool runner passes the worker staleness bound to the analyzer"
+assert_file_contains "${POOL_RUNNER}" "--max-compaction-handoffs" "pool runner budgets compaction handoffs apart from failures"
+assert_file_contains "${POOL_RUNNER}" "WAIT_STATUS_INTERVAL_SECONDS" "pool runner throttles repeated identical wait status lines"
+assert_file_contains "${POOL_RUNNER}" "waited_seconds=" "pool runner reports how long it has been waiting"
+assert_file_contains "${POOL_RUNNER}" "type=pool-unreachable" "pool runner surfaces issues stranded behind terminal failures"
+assert_file_contains "${POOL_RUNNER}" "unreachable-issues" "pool runner queries the unreachable set from the state helper"
 assert_file_contains "${ROOT_DIR}/assets/run-with-it-pool.ps1" "type=pool-heartbeat" "ps1 pool runner emits a periodic liveness heartbeat"
 assert_file_contains "${ROOT_DIR}/assets/run-with-it-pool.ps1" "type=pool-slot-fill-abandoned" "ps1 pool runner finalizes an issue after bounded spawn failures"
+assert_file_contains "${ROOT_DIR}/assets/run-with-it-pool.ps1" "MaxWorkerWaitSeconds" "ps1 pool runner bounds how long it waits on one in-flight worker"
+assert_file_contains "${ROOT_DIR}/assets/run-with-it-pool.ps1" "WaitStatusIntervalSeconds" "ps1 pool runner throttles repeated identical wait status lines"
+assert_file_contains "${ROOT_DIR}/assets/run-with-it-pool.ps1" "type=pool-unreachable" "ps1 pool runner surfaces issues stranded behind terminal failures"
 assert_file_contains "${RUN_WITH_IT_SKILL}" 'POOL_HEARTBEAT_SECONDS' "skill documents the pool heartbeat cadence"
 assert_file_contains "${RUN_WITH_IT_SKILL}" 'MAX_SPAWN_BOOTSTRAP_ATTEMPTS' "skill documents bounded spawn bootstrap retries"
 assert_file_contains "${RUN_WITH_IT_SKILL}" "Collect NEWLY_QUEUED = ALL issues with status=\"pending\" that do not yet have a" "skill Step B assembles contexts for all pending issues, not a slot-sized batch"
