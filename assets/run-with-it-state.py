@@ -1258,6 +1258,131 @@ def requeue_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+FRESH_RESTART_RUNTIME_FIELDS = {
+    "commit_sha",
+    "context_file",
+    "done_file",
+    "failed_merge_report_file",
+    "issue_base_sha",
+    "issue_base_source",
+    "issue_branch",
+    "log_file",
+    "pid",
+    "report_file",
+    "started_at",
+    "sub_coord_context_file",
+    "sub_coord_original_context_file",
+    "sub_coord_state_file",
+    "worktree_path",
+}
+
+
+def fresh_restart_artifact_paths(entry: dict[str, Any], issue_dir: str) -> list[str]:
+    """Return every issue-scoped runtime artifact that could make a retry resume.
+
+    The recovery directory is deliberately excluded so prior audit archives
+    survive repeated `continue all` runs.
+    """
+    paths = [entry.get("report_file", ""), entry.get("done_file", "")]
+    if not issue_dir or not os.path.isdir(issue_dir):
+        return paths
+    for name in os.listdir(issue_dir):
+        if name != "recovery":
+            paths.append(os.path.join(issue_dir, name))
+    return paths
+
+
+def reset_entry_for_fresh_restart(
+    entry: dict[str, Any], issue_dir: str, timestamp: str, reason: str
+) -> tuple[int, str | None]:
+    generation = entry.get("restart_generation", 0)
+    if not isinstance(generation, int) or generation < 0:
+        generation = 0
+    generation += 1
+    archived = quarantine_artifacts(
+        issue_dir,
+        fresh_restart_artifact_paths(entry, issue_dir),
+        f"continue-all-{timestamp}-gen-{generation}",
+    )
+
+    for key in list(entry):
+        if (
+            key in FRESH_RESTART_RUNTIME_FIELDS
+            or key.startswith("auto_unblock_")
+            or key.startswith("merge_recovery_")
+            or key.startswith("requeue_")
+            or key.startswith("stale_base_")
+            or key.startswith("sub_coord_")
+        ):
+            entry.pop(key, None)
+
+    entry["status"] = "pending"
+    entry["blocking_reasons"] = []
+    entry["restart_generation"] = generation
+    entry["continued_all_at"] = timestamp
+    entry["sub_coord_recovery_attempts"] = 0
+    entry["sub_coord_compaction_handoffs"] = 0
+    if reason:
+        entry["continue_all_reason"] = reason
+    if archived:
+        entry["continue_all_archive_dir"] = archived
+    return generation, archived
+
+
+def continue_all_issues(args: argparse.Namespace) -> int:
+    """Restart every non-completed issue as fresh pending work.
+
+    The caller must stop and verify the old process tree first. Completed issues
+    and their summaries remain authoritative; all other issue runtime artifacts
+    are archived and their context/branch/worktree bindings are cleared.
+    """
+    state = load_json(args.state_file)
+    registry = state.get("issue_registry", {})
+    timestamp = utc_stamp()
+    reason = getattr(args, "reason", "")
+    requeued: list[str] = []
+    completed = 0
+    archives: dict[str, str] = {}
+
+    for issue, entry in registry.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") == "completed":
+            completed += 1
+            continue
+        issue_dir = entry.get("issue_dir", "") or issue_dir_for_report(
+            state, str(issue), entry.get("report_file", "")
+        )
+        _, archived = reset_entry_for_fresh_restart(entry, issue_dir, timestamp, reason)
+        issue_key = str(issue)
+        requeued.append(issue_key)
+        if archived:
+            archives[issue_key] = archived
+
+    requeued_set = set(requeued)
+    state["active_pool_issues"] = []
+    state["completed_summaries"] = [
+        summary
+        for summary in state.get("completed_summaries", [])
+        if not isinstance(summary, dict) or str(summary.get("issue")) not in requeued_set
+    ]
+    state.setdefault("auto_repairs", []).append(
+        {
+            "at": timestamp,
+            "kind": "continue-all",
+            "issues": [int(issue) for issue in requeued],
+            "reason": reason,
+            "archive_dirs": archives,
+        }
+    )
+    save_json(args.state_file, state)
+    print(
+        f"CONTINUE_ALL|requeued={len(requeued)}|completed_preserved={completed}"
+        f"|issues={','.join(requeued)}"
+    )
+    return 0
+
+
 def quarantine_sub_coord_markers(args: argparse.Namespace) -> int:
     """Move any pre-existing sub-coordinator terminal markers aside before a
     (re)dispatch so the fresh runner can never reuse a poisoned report and no-op.
@@ -1493,6 +1618,11 @@ def build_parser() -> argparse.ArgumentParser:
     requeue.add_argument("--issue", required=True)
     requeue.add_argument("--reason", default="")
     requeue.set_defaults(func=requeue_issue)
+
+    continue_all = subparsers.add_parser("continue-all")
+    add_state_file(continue_all)
+    continue_all.add_argument("--reason", default="")
+    continue_all.set_defaults(func=continue_all_issues)
 
     quarantine_markers = subparsers.add_parser("quarantine-sub-coord-markers")
     quarantine_markers.add_argument("--issue-dir", required=True)

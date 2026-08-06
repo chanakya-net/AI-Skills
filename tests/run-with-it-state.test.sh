@@ -67,6 +67,90 @@ assert_eq "${recovery_attempts_700}" "0" "manual requeue resets the sub-coordina
 [[ ! -f "${ISSUE_DIR_700}/report.json" ]] || fail "requeue should quarantine the stale report.json"
 ls "${ISSUE_DIR_700}/recovery/"requeue-* >/dev/null 2>&1 || fail "requeue should create a recovery archive dir"
 
+# --- continue all: every non-completed issue restarts as fresh pending work ---
+CONTINUE_STATE="${WORK_DIR}/continue-all-state.json"
+CONTINUE_ROOT="${WORK_DIR}/continue-all-issues"
+for issue in 801 802 803 804 805 806 807; do
+  issue_dir="${CONTINUE_ROOT}/${issue}"
+  mkdir -p "${issue_dir}/workers/impl"
+  printf '{"phase":"impl"}\n' > "${issue_dir}/sub-state.json"
+  printf '{"outcome":"blocked"}\n' > "${issue_dir}/report.json"
+  printf 'DONE\n' > "${issue_dir}/sub-coordinator.done"
+  printf '{"commit_sha":"stale"}\n' > "${issue_dir}/workers/impl/cycle-1-result.json"
+done
+
+cat > "${CONTINUE_STATE}" <<JSON
+{
+  "schema_version": 4,
+  "execution_plan": {"topo_order": [800, 801, 802, 803, 804, 805, 806, 807], "parallel_jobs": 4},
+  "active_pool_issues": [801, 806],
+  "completed_summaries": [{"issue": 800, "outcome": "completed", "summary": "keep me"}],
+  "issue_registry": {
+    "800": {"status": "completed", "deps": [], "restart_generation": 4},
+    "801": {"status": "in_progress", "deps": [], "issue_dir": "${CONTINUE_ROOT}/801",
+            "context_file": "old-801.md", "issue_branch": "old-801", "worktree_path": "old-wt-801",
+            "pid": 111, "blocking_reasons": ["stale"], "sub_coord_recovery_attempts": 2},
+    "802": {"status": "pending", "deps": [], "issue_dir": "${CONTINUE_ROOT}/802",
+            "sub_coord_context_file": "old-802.md", "issue_branch": "old-802", "worktree_path": "old-wt-802"},
+    "803": {"status": "blocked", "deps": [801], "issue_dir": "${CONTINUE_ROOT}/803",
+            "blocking_reasons": ["blocked-by-issue-801"]},
+    "804": {"status": "failed-review", "deps": [], "issue_dir": "${CONTINUE_ROOT}/804"},
+    "805": {"status": "failed-merge", "deps": [], "issue_dir": "${CONTINUE_ROOT}/805"},
+    "806": {"status": "merge_recovery", "deps": [], "issue_dir": "${CONTINUE_ROOT}/806",
+            "merge_recovery_report_file": "${CONTINUE_ROOT}/806/report.json"},
+    "807": {"status": "blocked", "deps": [], "report_file": "${CONTINUE_ROOT}/807/report.json"}
+  }
+}
+JSON
+
+continue_result="$(python3 "${STATE_HELPER}" continue-all --reason "user requested continue all" --state-file "${CONTINUE_STATE}")"
+assert_contains "${continue_result}" "requeued=7" "continue all reports every non-completed issue"
+assert_contains "${continue_result}" "completed_preserved=1" "continue all reports preserved completions"
+
+python3 - "${CONTINUE_STATE}" "${CONTINUE_ROOT}" <<'PY'
+import json
+import pathlib
+import sys
+
+state = json.load(open(sys.argv[1]))
+issue_root = pathlib.Path(sys.argv[2])
+registry = state["issue_registry"]
+
+assert registry["800"]["status"] == "completed"
+assert registry["800"]["restart_generation"] == 4
+assert state["completed_summaries"] == [{"issue": 800, "outcome": "completed", "summary": "keep me"}]
+assert state["active_pool_issues"] == []
+
+for issue in ("801", "802", "803", "804", "805", "806", "807"):
+    entry = registry[issue]
+    assert entry["status"] == "pending", (issue, entry)
+    assert entry["restart_generation"] == 1, (issue, entry)
+    assert entry["blocking_reasons"] == [], (issue, entry)
+    assert entry["sub_coord_recovery_attempts"] == 0, (issue, entry)
+    assert entry["sub_coord_compaction_handoffs"] == 0, (issue, entry)
+    for stale_key in (
+        "context_file",
+        "sub_coord_context_file",
+        "issue_branch",
+        "worktree_path",
+        "pid",
+        "merge_recovery_report_file",
+    ):
+        assert stale_key not in entry, (issue, stale_key, entry)
+
+    issue_dir = issue_root / issue
+    assert not (issue_dir / "sub-state.json").exists()
+    assert not (issue_dir / "report.json").exists()
+    assert not (issue_dir / "sub-coordinator.done").exists()
+    assert not (issue_dir / "workers").exists()
+    archives = list((issue_dir / "recovery").glob("continue-all-*"))
+    assert len(archives) == 1, (issue, archives)
+    assert (archives[0] / "sub-state.json").exists()
+    assert (archives[0] / "report.json").exists()
+    assert (archives[0] / "sub-coordinator.done").exists()
+    assert (archives[0] / "workers" / "impl" / "cycle-1-result.json").exists()
+PY
+
 # --- Fix G: completing a dependency auto-unblocks a blocked dependent ---
 # Re-block 700 on 701 to test the auto-unblock path on finalize.
 python3 - "${STATE_FILE}" "${ISSUE_DIR_700}" <<'PY'

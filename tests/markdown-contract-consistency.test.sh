@@ -66,6 +66,18 @@ assert_not_contains "assets/main-orchestrator-rules.md" 'completed / failed-revi
 assert_not_contains "assets/main-orchestrator-rules.md" 'completed/failed-review/blocked' \
   "stale compact three-status enumeration must be gone"
 
+# --- Explicit continue-all fresh restart contract ---
+
+assert_twins_contain "skills/run-with-it/SKILL.md" "assets/main-orchestrator-rules.md" \
+  'continue-all --reason "user requested continue all"' \
+  "continue-all must use the deterministic shared-state bulk reset"
+assert_twins_contain "skills/run-with-it/SKILL.md" "assets/main-orchestrator-rules.md" \
+  'restart_generation' \
+  "continue-all must allocate fresh retry branch/worktree paths"
+assert_twins_contain "skills/run-with-it/SKILL.md" "assets/main-orchestrator-rules.md" \
+  'clear `active_pool_issues`' \
+  "continue-all must clear stale pool ownership after stopping old processes"
+
 # --- ...while sub-coordinator REPORT outcomes use merge_failed, never failed-merge ---
 
 assert_contains "assets/sub-coordinator-prompt.md" 'completed | failed-review | merge_failed | blocked' \

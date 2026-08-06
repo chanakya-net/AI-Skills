@@ -14,6 +14,14 @@ You may create and push the shared run feature branch and create the final PR. Y
 
 Re-read `.run-with-it/main-state.json` before every loop iteration, no exceptions. After context compression you have no memory of prior work. That file is your entire memory. Never derive issue state from conversation history — always derive it from `main-state.json`. The `completed_summaries` array gives you the complete bounded history of every finished issue.
 
+## Continue All Rules
+
+- `continue all` is an explicit fresh restart, not ordinary resume. First run the platform stop helper and require `STOP|result=clean`; do not mutate state while any verified supervisor, dispatcher, or runner survives.
+- Then run `python3 "$ASSET_ROOT/run-with-it-state.py" continue-all --reason "user requested continue all" --state-file .run-with-it/main-state.json`.
+- Preserve issues whose status is `completed`. Reset every other status to `pending`, clear `active_pool_issues`, quarantine old issue/worker artifacts, and clear stale context, branch, worktree, and process bindings.
+- Rebuild context for every restarted issue. Use its incremented `restart_generation` to derive a new `-retry-<generation>` issue branch and worktree path, so abandoned worktrees cannot collide with the fresh dispatch.
+- Emit `STATUS|type=continue-all|requeued=<n>|completed_preserved=<n>|state_file=.run-with-it/main-state.json`, then enter the Main Loop immediately.
+
 ## Context Rules
 
 - Write Main Orchestrator status lines to `.run-with-it/main/main.log`.
@@ -39,6 +47,7 @@ Re-read `.run-with-it/main-state.json` before every loop iteration, no exception
 - When `PARALLEL_JOBS > 1`: the pool runner keeps up to that many compatible dispatch processes active and fills freed slots immediately. Persist `parallel_safe` and normalized `ownership_scope` for every issue. Newly written plans must set `execution_plan.concurrency_policy: "strict"` and derive metadata for every issue; under strict, missing metadata runs exclusively. Legacy states without the flag run permissive (missing metadata admits in parallel — explicit fail-open for backward compatibility). Explicit `parallel_safe=false`, root/malformed metadata, or a proven `ownership_scope` overlap always defers, and the pool runner surfaces deferrals as `STATUS|type=pool-admission-deferred`. Each issue has its own context file, log file, done file, and report file.
 - When `PARALLEL_JOBS = 1`: the same pool runner operates sequentially with at most one active issue.
 - Assemble context files for ALL pending issues up front — dependents included, not just the first slot-sized batch. The pool runner is the only dispatcher and it can only dispatch issues whose context files already exist on disk (full rationale in SKILL.md Step B). Context staleness is acceptable — the Sub-Coordinator re-fetches the issue body when it starts.
+- When a pending issue has `restart_generation > 0`, assemble its new context with `ISSUE_BRANCH=<feature-branch>-issue-<n>-retry-<restart_generation>` and `ISSUE_WORKTREE_PATH=.run-with-it/worktrees/issue-<n>-retry-<restart_generation>`. Never reuse the cleared pre-restart branch/worktree binding.
 - If `STATUS|type=pool-waiting-context` or `STATUS|type=sub-coord-dispatch-bootstrap-failed|...|reason=missing-context-file` appears in the watch output, contexts are missing: assemble them immediately while the pool keeps running — the pool picks them up on its next tick without a relaunch.
 - Never kill an individual sub-coordinator mid-batch. A stall in one batch member does not affect others. If a sub-coordinator process exits before a valid report, the platform pool runner may spawn a replacement sub-coordinator in recovery mode after structured analysis confirms no live worker will be orphaned.
 

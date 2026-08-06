@@ -108,6 +108,7 @@ Each skill is a standalone `SKILL.md` file that AI coding agents load as special
 | `run-with-it` | Two-layer orchestration runtime — schedules ready issues with topological ordering, routes work to the best agent/model, runs them in parallel pools with isolated worktrees, and recovers from merge conflicts automatically. |
 | `tdd-implementation` | Strict red-green-refactor loop — one test at a time, never cuts horizontal slices, verifies everything before committing. |
 | `help-me-debug` | Deep diagnosis workflow that produces both a human-readable root-cause report and a deterministic LLM-ready context file for handoff. |
+| `trim-code` | Behavior-preserving reduction pass over AI-generated code — finds missed reuse, collapses speculative structure, deletes redundancy, then proves equivalence with the project's own test, type, and lint commands. Runs on demand or armed for the whole session. |
 | `save-tokens` | Ultra-compressed narration mode — drops articles, filler, and pleasantries while keeping code and technical terms exact. |
 
 ## Runtime Assets
@@ -347,7 +348,8 @@ AI-Skills/
 │   ├── help-me-debug/SKILL.md
 │   ├── run-with-it/SKILL.md
 │   ├── save-tokens/SKILL.md
-│   └── tdd-implementation/SKILL.md
+│   ├── tdd-implementation/SKILL.md
+│   └── trim-code/SKILL.md
 │
 ├── assets/                                # Shared prompts, scripts, and configs
 │   ├── agent-registry.json                # Agent detection, invocation, model catalog

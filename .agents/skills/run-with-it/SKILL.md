@@ -27,7 +27,8 @@ These rules apply for the entire lifetime of this skill session. They are stated
 - **Stay attached until every issue is terminal.** The Main Orchestrator session must keep running the watch loop, and after each watch window print a one-line user-facing progress update from the newest `run-board` / `pool-heartbeat` lines (e.g. `Pool alive — 2 running, 3 pending, 4 completed, 1 blocked`). Never end the turn, go silent, or declare the run finished while any issue is still `pending`, `in_progress`, or `merge_recovery`. `pool-empty` with pending issues remaining means GOTO Step A, not done.
 - **GitHub operations (close, comment, e.g., gh issue close) are the Main Orchestrator control plane's sole responsibility.** Sub-Coordinators never touch GitHub. The pool runner performs the per-issue terminal comment/close immediately after reading a terminal compact report.
 - **Never inspect, infer, or act on a Sub-Coordinator's internal routing decisions.** Once a Sub-Coordinator is spawned, the agent and model it selects for its child workers are entirely its own responsibility — the Main Orchestrator has no visibility into, and no authority over, those internal choices. Do not read log files to determine which worker agent or model is running.
-- **Never kill, cancel, or restart a Sub-Coordinator mid-run.** If a Sub-Coordinator appears to be using a different agent or model than expected, that is correct behavior — it is applying its own complexity-based routing. Do not intervene. The only valid responses to a running Sub-Coordinator are: (a) wait for it to complete and write its compact report, or (b) alert the user after `SUB_COORD_TIMEOUT_SECONDS` and wait for a 'continue' or 'skip' instruction. **Sole exception:** a user-confirmed `discard`, which terminates the entire run — supervisor, dispatchers, and runners — through the platform stop helper (`run-with-it-stop.sh` / `run-with-it-stop.ps1`) per the Cleanup Discard flow. Never hand-roll kills even then.
+- **Never kill, cancel, or restart a Sub-Coordinator mid-run.** If a Sub-Coordinator appears to be using a different agent or model than expected, that is correct behavior — it is applying its own complexity-based routing. Do not intervene. The only valid responses to a running Sub-Coordinator are: (a) wait for it to complete and write its compact report, or (b) alert the user after `SUB_COORD_TIMEOUT_SECONDS` and wait for a 'continue' or 'skip' instruction. **Sole exceptions:** a user-confirmed `discard`, or an explicit `continue all` fresh restart. Both first terminate and verify the entire run — supervisor, dispatchers, and runners — through the platform stop helper (`run-with-it-stop.sh` / `run-with-it-stop.ps1`). Never hand-roll kills even then.
+- **`continue all` means fresh restart of every non-completed issue.** After the stop helper proves no old run process survives, run `run-with-it-state.py continue-all`; preserve `completed` issues, reset every other status to `pending`, clear `active_pool_issues`, archive old issue/worker artifacts, and rebuild contexts with a new retry generation before relaunching the pool.
 - **Never inject worker-routing overrides into a Sub-Coordinator that has already been spawned.** Canonical worker overrides (`FORCED_AGENT`, `FORCED_MODEL`, `COMPLEXITY_LEVEL`, `COMPLEXITY_SCORE`) may only be set before spawning, as part of the context file assembled in Step C. After the platform dispatcher calls `run-agent.sh` / `run-agent.ps1`, those values are locked and the Main Orchestrator must not attempt to change them.
 - **Run the platform pool runner (`run-with-it-pool.sh` / `run-with-it-pool.ps1`) as the single rolling-pool supervisor.** The pool runner spawns Sub-Coordinator dispatch processes, captures each dispatcher PID, and persists `issue`, `pid`, `started_at`, `context_file`, `log_file`, `done_file`, and `report_file` before monitoring.
 - **Use the platform worker watcher (`worker-watch.sh` / `worker-watch.ps1`) inside the dispatcher for Sub-Coordinator liveness checks during pool monitoring.** Pass each dispatch child PID, `done_file`, and `log_file`; treat PID liveness as diagnostic only. Completion requires the done sentinel and compact report artifacts.
@@ -292,16 +293,17 @@ Before execution verify:
 3. `gh` auth when GitHub intake is required.
 4. `SUB_COORD_AGENT` is installed (detected): on Bash, run `"$ASSET_ROOT/run-agent.sh" --list-agents --detected-only`; on native PowerShell, run `& (Join-Path $ASSET_ROOT "run-agent.ps1") --list-agents --detected-only`. Confirm `SUB_COORD_AGENT` appears.
 5. `SUB_COORD_MODEL` is in `SUB_COORD_AGENT`'s `known_models` in `agent-registry.json`.
-6. **Existing-state detection** (resume vs. discard prompt): before any issue intake or fresh task selection, check whether `.run-with-it/main-state.json` exists in the current working directory.
+6. **Existing-state detection** (resume vs. continue-all vs. discard prompt): before any issue intake or fresh task selection, check whether `.run-with-it/main-state.json` exists in the current working directory.
 
    - If it exists, pause and present exactly this prompt to the user:
 
      ```
      Existing run state found at .run-with-it/main-state.json.
-     Type "resume" to continue the previous run, or "discard" to delete it and start fresh.
+     Type "resume" to preserve and continue live work, "continue all" to restart every non-completed issue as new work, or "discard" to delete the run and start fresh.
      ```
 
    - **`resume`**: do not delete the file. Proceed to the Resume Flow section.
+   - **`continue all`**: preserve completed issues and proceed to the Continue All Flow section, which stops any stale process tree and restarts every non-completed issue with fresh artifacts.
    - **`discard`**: apply the Cleanup `Discard` policy, then continue with normal preflight and fresh issue intake as if no prior state existed.
    - Do not start any new task, fetch any issue, or spawn any Sub-Coordinator until the user responds.
 
@@ -430,8 +432,9 @@ Build $SUB_COORD_CONTEXT_FILE_<n> (a separate temp file per issue) containing, i
      RUN_FEATURE_BRANCH=<shared-run-feature-branch>
      RUN_BASE_BRANCH=<original-base-branch>
      RUN_BASE_SHA=<original-base-sha>
-     ISSUE_BRANCH=<shared-run-feature-branch>-issue-<n>
-     ISSUE_WORKTREE_PATH=<abs-path-to-.run-with-it/worktrees/issue-<n>>
+     RESTART_GENERATION=<issue_registry[n].restart_generation, default 0>
+     ISSUE_BRANCH=<shared-run-feature-branch>-issue-<n>[-retry-<RESTART_GENERATION> when nonzero]
+     ISSUE_WORKTREE_PATH=<abs-path-to-.run-with-it/worktrees/issue-<n>[-retry-<RESTART_GENERATION> when nonzero]>
      MAX_AGENT_DEPTH=1
      DELEGATED_REVIEW=<value>
      MAX_ITERATIONS=<value>
@@ -683,7 +686,7 @@ Additional env vars (no flag equivalents):
 
 ## Cleanup
 
-Cleanup runs only after a successful completion, failed run, interrupted run, or explicit `discard` command. Cleanup must not fire on `resume`.
+Cleanup runs only after a successful completion, failed run, interrupted run, or explicit `discard` command. Cleanup must not fire on `resume` or `continue all`; the Continue All Flow performs only its targeted archival/reset.
 
 ### Successful Run Completion
 
@@ -870,6 +873,7 @@ Emit parseable one-line status messages:
 - runner sandbox retry: `STATUS|type=runner-sandbox-retry|agent=<agent>|model=<model>|reason=<error-summary>`
 - runner sandbox retry result: `STATUS|type=runner-sandbox-retry-result|outcome=<success|failed>`
 - cleanup completed: `STATUS|type=cleanup|action=completed|files_removed=<n>`
+- continue all: `STATUS|type=continue-all|requeued=<n>|completed_preserved=<n>|state_file=.run-with-it/main-state.json`
 - discard shutdown (from the stop helper): `STOP|type=target|source=<pool|dispatcher|runner>|pid=<pid>|action=<term-group|term-pid|stop-tree|already-dead|skip-not-ours>` followed by `STOP|result=<clean|survivors>|terminated=<n>|already_dead=<n>|skipped_not_ours=<n>`
 - cleanup discarded: `STATUS|type=cleanup|action=discarded|files_removed=<n>`
 - final ledger row: `STATUS|type=ledger|task=<task-id>|role=impl|cycle=0|agent=<agent-name>|model=<model-id>|added=<n>|deleted=<n>|total=<n>|reason=sub-coordinator|input_tokens=<n-or-unknown>|output_tokens=<n-or-unknown>|cache_hit_tokens=<n-or-unknown>|telemetry_source=sub-coordinator-report`
@@ -886,6 +890,45 @@ Also print a final summary of all `completed_summaries` entries showing:
 - Aggregate token usage (sum `token_usage` fields from all report JSONs for issues that have completed)
 
 ## Appendix C: Resume and State Contract
+
+### Continue All Flow
+
+On startup, if `.run-with-it/main-state.json` exists and the user types
+`continue all`, treat that phrase as explicit authorization to restart every
+incomplete issue from a clean issue-level runtime state:
+
+1. Re-read `.run-with-it/main-state.json`.
+2. Run the platform stop helper exactly as documented in Cleanup → Discard.
+   Continue only when it prints `STOP|result=clean`. Even when recorded workers
+   are already dead, this identity-checked pass proves no stale supervisor,
+   dispatcher, or runner can write into the reset state. If any verified
+   survivor remains, stop and report it; do not mutate issue state.
+3. Run the shared bulk reset:
+
+   ```bash
+   python3 "$ASSET_ROOT/run-with-it-state.py" continue-all --reason "user requested continue all" --state-file .run-with-it/main-state.json
+   ```
+
+   The helper leaves each issue with `status="completed"` and its completed
+   summary unchanged. Every issue with any status other than `completed` is
+   reset to `pending`, removed from `active_pool_issues`, stripped of stale
+   context/branch/worktree/process bindings, and assigned an incremented
+   `restart_generation`. Its old issue-level artifacts—including
+   `sub-state.json` and `workers/`—are moved under
+   `.run-with-it/issues/<n>/recovery/continue-all-<timestamp>-gen-<generation>/`
+   for audit rather than reused.
+4. Re-enter the Main Loop at Step A. Step B must see the cleared context paths,
+   and Step C must rebuild every restarted issue's context. For a nonzero
+   `restart_generation`, derive fresh paths as
+   `<feature-branch>-issue-<n>-retry-<generation>` and
+   `.run-with-it/worktrees/issue-<n>-retry-<generation>` so an abandoned
+   worktree cannot collide with the new dispatch.
+5. Emit:
+   `STATUS|type=continue-all|requeued=<n>|completed_preserved=<n>|state_file=.run-with-it/main-state.json`.
+
+If the state file is missing or unparseable, emit
+`STATUS|type=continue-all-error|reason=<missing|parse-error>|action=user-required`
+and stop before starting fresh intake.
 
 ### Resume Flow
 

@@ -297,8 +297,11 @@ assert_file_contains "$COORDINATOR_RULES_FILE" 'Normal Sub-Coordinators report o
 
 # Resume
 assert_contains 'Resume Flow' "documents resume flow"
+assert_contains 'Continue All Flow' "documents explicit continue-all fresh restart flow"
 assert_contains 'main-state.json' "documents resume state check"
 assert_contains 'Validate the supervisor lease first' "documents lease-aware resume instead of blind re-spawn"
+assert_contains 'continue-all --reason' "documents deterministic bulk requeue command"
+assert_contains 'restart_generation' "documents fresh retry generation"
 
 # Status messages (where documented)
 assert_contains 'STATUS|type=sub-coord-spawn' "documents sub spawn status line"
@@ -338,10 +341,12 @@ assert_file_contains "$ORCHESTRATOR_RULES_FILE" 'pool-admission-deferred' "orche
 assert_file_contains "$SKILL_FILE" 'Validate the supervisor lease first' "resume flow validates the detached supervisor lease before touching state"
 assert_file_contains "$SKILL_FILE" 'Never bulk-reset `in_progress` issues' "resume flow forbids bulk in_progress resets that duplicate detached work"
 assert_file_contains "$ORCHESTRATOR_RULES_FILE" 'validate the supervisor lease' "orchestrator rules require lease validation on resume/compression"
+assert_file_contains "$ORCHESTRATOR_RULES_FILE" '`continue all`' "orchestrator rules document explicit fresh restart mode"
+assert_file_contains "$ORCHESTRATOR_RULES_FILE" 'continue-all --reason' "orchestrator rules invoke deterministic bulk requeue"
 assert_file_contains "$SKILL_FILE" 'Refuse discard if termination cannot be established' "discard refuses to delete state under live detached processes"
 assert_file_contains "$SKILL_FILE" 'run-with-it-stop.sh' "discard terminates the run through the platform stop helper"
 assert_file_contains "$SKILL_FILE" 'STOP|result=' "discard documents the stop helper result contract"
-assert_file_contains "$SKILL_FILE" 'Sole exception:' "no-kill rule carries an explicit confirmed-discard exception"
+assert_file_contains "$SKILL_FILE" 'Sole exceptions:' "no-kill rule carries explicit discard and continue-all exceptions"
 # No reset/clear instruction may survive anywhere an agent looks after
 # compression or on resume — stale copies of the old bulk-reset contract are
 # how detached dispatchers get duplicated.
@@ -350,7 +355,9 @@ assert_file_section_not_contains "$SKILL_FILE" '### Resume Flow' '### Compressio
 assert_file_section_contains "$SKILL_FILE" '### Compression Survival' '## Appendix D' 'validate the supervisor lease' "Compression Survival follows the lease-aware Resume Flow"
 assert_file_section_not_contains "$SKILL_FILE" '### Compression Survival' '## Appendix D' 'reset all `in_progress`' "Compression Survival must not instruct bulk in_progress resets"
 assert_file_section_not_contains "$SKILL_FILE" '### Compression Survival' '## Appendix D' 'clear `active_pool_issues` to `[]`' "Compression Survival must not instruct clearing active_pool_issues"
-assert_file_not_contains "$SKILL_FILE" 'are reset to `pending`' "no stale bulk-reset contract survives anywhere in the skill"
+assert_file_section_contains "$SKILL_FILE" '### Continue All Flow' '### Resume Flow' 'status other than `completed`' "Continue All resets every non-completed status"
+assert_file_section_contains "$SKILL_FILE" '### Continue All Flow' '### Resume Flow' 'reset to `pending`' "Continue All bulk-requeues incomplete work"
+assert_file_section_contains "$SKILL_FILE" '### Continue All Flow' '### Resume Flow' 'active_pool_issues' "Continue All clears stale active-pool state"
 assert_file_not_contains "$SKILL_FILE" 'Sub-Coordinators are ephemeral' "no stale re-spawn-fresh rationale survives anywhere in the skill"
 assert_file_contains "$ORCHESTRATOR_RULES_FILE" 'Never treat starting the pool process as completion of the Main Coordinator turn.' "orchestrator rules forbid returning immediately after pool launch"
 assert_file_contains "$ORCHESTRATOR_RULES_FILE" 'must never merge issue branches' "orchestrator rules forbid direct issue branch merges"
