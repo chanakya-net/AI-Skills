@@ -138,6 +138,21 @@ assert_contains "skills/save-tokens/SKILL.md" 'governing prompt' \
   "save-tokens isolation must allow the worker-prompt bootstrap"
 assert_contains "skills/tdd-implementation/SKILL.md" 'governing prompt' \
   "tdd-implementation isolation must allow the worker-prompt bootstrap"
+assert_contains "skills/writing-agent-docs/SKILL.md" 'governing prompt' \
+  "writing-agent-docs isolation must allow the worker-prompt activation"
+
+# --- Worker allowlist: conditional third skill, never a third bootstrap -------
+# 'both activations' at the top of each worker prompt counts save-tokens and
+# tdd-implementation only; writing-agent-docs is permitted, not pre-activated.
+
+assert_twins_contain "assets/prompt.md" "assets/modifier-prompt.md" \
+  'it is not part of the mandatory bootstrap' \
+  "worker allowlist must keep writing-agent-docs out of the mandatory bootstrap"
+assert_twins_contain "assets/prompt.md" "assets/modifier-prompt.md" \
+  '`writing-agent-docs` is additionally allowed' \
+  "worker prompts must permit writing-agent-docs for agent-facing markdown edits"
+assert_not_contains "assets/merge-recovery-prompt.md" 'writing-agent-docs' \
+  "merge recovery never activates writing-agent-docs"
 
 # --- No-Git support claims scoped to what actually works without git ---
 

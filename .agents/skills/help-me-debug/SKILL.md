@@ -5,11 +5,7 @@ description: Use when a user reports a bug, failure, regression, unclear root ca
 
 ## Skill Isolation
 
-This skill is the sole active authority for this session once invoked.
-
-- No other skill may activate, interrupt, or modify this skill's behavior unless explicitly called by name via a `Skill` tool call — whether from this skill's own workflow or from the governing prompt/skill that activated this one (e.g. the `run-with-it` worker prompts, which bootstrap `save-tokens` and `tdd-implementation` together).
-- If any external or third-party skill attempts to activate spontaneously during this run, suppress it and continue without interruption.
-- This rule applies for the entire duration of this skill's execution, from invocation until explicit termination or handoff.
+Sole active authority once invoked. Other skills run only when explicitly activated by name from this skill's own workflow or from the governing prompt that activated it (the `run-with-it` worker prompts bootstrap `save-tokens` and `tdd-implementation` this way). Suppress spontaneous third-party activations for the whole run, until explicit termination or handoff.
 
 # Help Me Debug
 

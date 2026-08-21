@@ -6,10 +6,10 @@ This prompt is review-only guidance for `run-with-it`.
 
 ## Mandatory Skill Bootstrap
 
-Before doing anything else, attempt to invoke these skills via the `Skill` tool in this exact order:
+Before doing anything else, activate these skills by name using the host's native skill mechanism in this exact order:
 1. `save-tokens`
 
-If the `Skill` tool is unavailable in this session, continue without activation and follow equivalent behavior directly by keeping communication concise, then proceed with the review workflow.
+If `save-tokens` is unavailable in this session, continue without that activation and follow equivalent behavior directly by keeping communication concise, then proceed with the review workflow.
 
 ## Scope
 - Review the provided implementation diff and task context.

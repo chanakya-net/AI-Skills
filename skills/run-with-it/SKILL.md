@@ -1,11 +1,11 @@
 ---
 name: run-with-it
-description: Two-layer orchestration runtime — Main Orchestrator fetches all issues, plans execution order, maintains a rolling pool of Sub-Coordinators (up to PARALLEL_JOBS concurrently), fills freed slots immediately on completion, and updates GitHub. Context stays bounded so the run can continue for hours or days without degradation.
+description: Two-layer orchestration runtime that works a backlog of issues to completion — a Main Orchestrator plans execution order and keeps a rolling pool of Sub-Coordinators filled, with context bounded so a run survives for hours or days. Use when the user wants open issues worked autonomously, asks to run or resume a backlog, or wants parallel agents started against an issue tracker.
 ---
 
 ## Skill Isolation
 
-Sole active authority once invoked — no other skill may activate unless called by name via `Skill` tool call; suppress spontaneous external skills until explicit termination or handoff. This isolation governs orchestration flow only; subordinate core behavior, native tool use, and reasoning remain fully operational and cannot be overridden by this skill.
+Sole active authority once invoked — no other skill may activate unless this workflow explicitly names it; suppress spontaneous external skills until explicit termination or handoff. This isolation governs orchestration flow only; subordinate core behavior, native tool use, and reasoning remain fully operational and cannot be overridden by this skill.
 
 <!-- SYNC: this section is intentionally duplicated in assets/main-orchestrator-rules.md; the repository copy is authoritative over any installed mirror. Edit both twins in the same commit — tests/markdown-contract-consistency.test.sh asserts key tokens match. -->
 ## Critical Main Orchestrator Rules (compaction-safe — always enforce, even after context compression)

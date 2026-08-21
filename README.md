@@ -76,6 +76,8 @@ PARALLEL_JOBS=1 ISSUE_LABEL=ready-for-agent  # then invoke run-with-it
 
 ## What's New
 
+**Authoring standard.** Documents a model executes now have their own skill and their own test. `writing-agent-docs` carries the standard — context pointers, information hierarchy, completion criteria, leading words, and pruning. [`AGENTS.md`](AGENTS.md) routes every edit to a `SKILL.md` or an `assets/` prompt through it, and `tests/skill-authoring-contract.test.sh` enforces frontmatter, trigger branches, declared twins, and `.agents/skills/` mirror drift. Human-facing prose has a separate standard in [`docs/prose-checklist.md`](docs/prose-checklist.md).
+
 Recent `run-with-it` updates focus on keeping long multi-agent runs observable and recoverable:
 
 - **Live stage board** — the pool runner emits `STATUS|type=run-board|board=...` whenever issue stages change. You can print the same read-only view with `python3 assets/run-with-it-state.py status-board --state-file .run-with-it/main-state.json` or add `--oneline`.
@@ -109,6 +111,7 @@ Each skill is a standalone `SKILL.md` file that AI coding agents load as special
 | `tdd-implementation` | Strict red-green-refactor loop — one test at a time, never cuts horizontal slices, verifies everything before committing. |
 | `help-me-debug` | Deep diagnosis workflow that produces both a human-readable root-cause report and a deterministic LLM-ready context file for handoff. |
 | `save-tokens` | Ultra-compressed narration mode — drops articles, filler, and pleasantries while keeping code and technical terms exact. |
+| `writing-agent-docs` | Repository-scoped authoring standard for agent instructions — context pointers, information hierarchy, completion criteria, leading words, and pruning. Fires when an agent edits a `SKILL.md`, an `assets/` prompt, `AGENTS.md`, or `CLAUDE.md` in this repository. |
 
 ## Runtime Assets
 
@@ -322,16 +325,26 @@ chmod +x "$HOME/.ai-skill-collections/assets/"*.sh "$HOME/.ai-skill-collections/
 
 ## Adding a Skill
 
-1. Create `skills/<name>/SKILL.md` with YAML front matter (`name`, `description`)
-2. Add supporting files under `assets/` if needed
-3. Add or update contract tests under `tests/`
-4. Re-run relevant tests before publishing
+Skill and prompt markdown is source code here: `tests/` asserts exact strings in exact files, so a prose edit is a code change. [`AGENTS.md`](AGENTS.md) is the entry point for any agent working in this repo — Codex and Antigravity read it directly, and [`CLAUDE.md`](CLAUDE.md) imports it for Claude Code, which reads only its own filename. The `writing-agent-docs` skill carries the standard.
+
+1. Create `skills/<name>/SKILL.md` with YAML front matter. `name` matches the directory; `description` states what the skill is **and** lists the branches that should trigger it.
+2. Add supporting prompts and scripts under `assets/` if needed.
+3. Run `tools/sync-agent-skills.sh` to mirror the skill into `.agents/skills/` for repo-local discovery.
+4. Add a contract test under `tests/` asserting the boundaries the skill claims.
+5. Add a row to the skills table above.
+6. Run the full suite before publishing.
+
+Editing an existing skill or prompt follows the same standard, plus one rule: grep `tests/` for the strings you are about to change and move the assertion in the same commit.
+
+Human-facing documents (`README.md`, `docs/`, PR bodies, release notes) go through [`docs/prose-checklist.md`](docs/prose-checklist.md) instead. It never runs on `SKILL.md` or `assets/*.md`, where the repetition the tests assert is the point.
 
 ## Repository Structure
 
 ```
 AI-Skills/
 ├── README.md
+├── AGENTS.md                               # Entry point for any agent working in this repo
+├── CLAUDE.md                               # `@AGENTS.md` import (Claude Code does not read AGENTS.md)
 ├── LICENSE
 ├── explainer.html                         # Detailed project walkthrough
 ├── diagram.pdf                            # Architecture sequence diagram
@@ -347,7 +360,10 @@ AI-Skills/
 │   ├── help-me-debug/SKILL.md
 │   ├── run-with-it/SKILL.md
 │   ├── save-tokens/SKILL.md
-│   └── tdd-implementation/SKILL.md
+│   ├── tdd-implementation/SKILL.md
+│   └── writing-agent-docs/                 # Authoring standard for agent-facing markdown
+│       ├── SKILL.md
+│       └── SKILL-MECHANICS.md          # Frontmatter, invocation choice, router skills
 │
 ├── assets/                                # Shared prompts, scripts, and configs
 │   ├── agent-registry.json                # Agent detection, invocation, model catalog
@@ -372,21 +388,26 @@ AI-Skills/
 │   ├── coordinator-rules.md               # Compact Sub-Coordinator rules
 │   └── main-orchestrator-rules.md         # Compact Main Orchestrator rules
 │
-├── tests/                                 # Contract test suite (26 files)
+├── tests/                                 # Contract test suite (31 files)
 │   ├── run-agent.test.sh                  # Runner behavior, dry-run, telemetry
 │   ├── run-with-it-dispatch.test.sh       # Dispatcher smoke tests, artifact recovery
 │   ├── run-with-it-pool.test.sh           # Pool scheduling, dependency awareness
 │   ├── run-with-it-routing.test.sh        # Router behavior, score-to-level mapping
 │   ├── install-assets-contract.test.sh    # Installer output verification
-│   └── ... (19 more)
+│   ├── skill-authoring-contract.test.sh   # Frontmatter, pointers, twins, mirror drift
+│   └── ... (25 more)
 │
 ├── docs/                                  # Design plans and specs
+│   ├── prose-checklist.md                 # Human-facing prose standard (README, docs, PRs)
 │   └── superpowers/
 │       ├── plans/                         # Architecture decision documents
 │       └── specs/                         # Design specifications
 │
+├── tools/
+│   └── sync-agent-skills.sh               # Mirrors skills/ into .agents/skills/ (--check reports drift)
+│
 ├── .claude-plugin/                        # Claude Code marketplace entry
-└── .agents/skills/                        # Duplicate skills for multi-agent discovery
+└── .agents/skills/                        # Generated mirror of skills/ for repo-local agent discovery
 ```
 
 ## License

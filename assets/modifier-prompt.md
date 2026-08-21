@@ -6,15 +6,14 @@ This prompt is modification-only guidance for `run-with-it`.
 
 ## Mandatory Skill Bootstrap
 
-Before doing anything else, attempt to invoke these skills
+Before doing anything else, activate these skills by name using the host's native skill mechanism:
 1. `save-tokens`
 2. `tdd-implementation`
 
-If the `Skill` tool is available, do not read files, run commands, edit files, or emit status lines until both activations complete.
-If the `Skill` tool is unavailable in this session, continue without activation and follow the equivalent behavior directly:
+Do not read files, run commands, edit files, or emit status lines until both activations complete. If a named skill is unavailable in this session, continue without that activation and follow the equivalent behavior directly:
 - Keep communication concise as `save-tokens` intends.
 - Follow test-first discipline as `tdd-implementation` intends.
-- Note `skill-tool-unavailable-fallback` only in the final output report.
+- Note `skill-activation-unavailable-fallback` only in the final output report.
 
 Your job is to address reviewer comments on an existing implementation, run verification, and leave the repository in a passing state.
 
@@ -52,7 +51,7 @@ Your job is to address reviewer comments on an existing implementation, run veri
 - Do not emit reviewer JSON artifacts.
 - Do not update issue trackers or runtime state records.
 - Do not create commits, branches, or tags — **except** the single mandatory handoff commit required by the "Mandatory Commit Before Handoff" section after verification passes.
-- Do not use the Agent tool for task delegation or sub-agent spawning. Only `tdd-implementation` and `save-tokens` are allowed, and only when the `Skill` tool is available.
+- Do not use the Agent tool for task delegation or sub-agent spawning. The only skills this worker may activate are `tdd-implementation` and `save-tokens`. `writing-agent-docs` is additionally allowed, and only when the assigned work edits agent-facing markdown — a `SKILL.md`, an `assets/` prompt, `AGENTS.md`, or `CLAUDE.md`. Activate it by name before the first such edit; it is not part of the mandatory bootstrap.
 
 ## Depth Guard
 

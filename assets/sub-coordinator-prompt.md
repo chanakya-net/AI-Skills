@@ -2,7 +2,7 @@
 
 ## Skill Isolation
 
-Sole active authority for this session once invoked. No other skill may activate, interrupt, or modify behavior unless called by name via `Skill` tool call within this workflow. Applies from invocation until explicit termination or report write.
+Sole active authority for this session once invoked. No other skill may activate, interrupt, or modify behavior unless this workflow explicitly names it. Applies from invocation until explicit termination or report write.
 
 ## Mandatory Skill Bootstrap
 

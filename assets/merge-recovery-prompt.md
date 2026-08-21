@@ -6,13 +6,12 @@ You are the **Merge Recovery Coordinator** for `run-with-it`. You run only after
 
 ## Mandatory Skill Bootstrap
 
-Before doing anything else, attempt to invoke these skills
+Before doing anything else, activate these skills by name using the host's native skill mechanism:
 1. `save-tokens`
 
-If the `Skill` tool is available, do not read files, run commands, edit files, or emit status lines until the activation completes.
-If the `Skill` tool is unavailable in this session, continue without activation and follow the equivalent behavior directly:
+Do not read files, run commands, edit files, or emit status lines until the activation completes. If `save-tokens` is unavailable in this session, continue without that activation and follow the equivalent behavior directly:
 - Keep communication concise as `save-tokens` intends.
-- Note `skill-tool-unavailable-fallback` only in the final output report.
+- Note `skill-activation-unavailable-fallback` only in the final output report.
 
 ## Scope
 

@@ -5,37 +5,43 @@
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/break-req/SKILL.md",
-      "computedHash": "66df6fbde39861bd63c736266851d55214e7ee30b8a893d3a7c3383dd9d0a580"
+      "computedHash": "ec5574a7d04789d41f80311e287f97dc3c308d7df6fcfee5477491be8e8f46f3"
     },
     "create-git-issue": {
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/create-git-issue/SKILL.md",
-      "computedHash": "6d370b7ee97af56239f59e5900ab09e8c4ff75c7fae76cfe9e37b2b3a77d4989"
+      "computedHash": "15e336e9c3ee5f707defd2f0330dee3ee32f24166c7a3296bc2c6cae235c20fd"
     },
     "help-me-debug": {
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/help-me-debug/SKILL.md",
-      "computedHash": "dc8909d271c46dcd4ec16342996bc51c0d6ff500c5e78e1d533d841738cad417"
+      "computedHash": "3d50eaa3af1f92622f8d49fe9fb5a7199ca080e7a533f893b490330a0f84f260"
     },
     "run-with-it": {
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/run-with-it/SKILL.md",
-      "computedHash": "19043ea05b3385d244133ee3d3d2c89026df3f9981470030564d680538e3c030"
+      "computedHash": "0ec14df3f25cad30b555b6e23ce5e78ce43d18c955a60dd6ec9d88b17ecb6bec"
     },
     "save-tokens": {
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/save-tokens/SKILL.md",
-      "computedHash": "ae73e8a88fb986a8d1f789a42c0b523f0f84ade9078093160b449372dca8d09e"
+      "computedHash": "c65c80a68598e2f6420a1ea7405cb02094e7db8c8bcc8f1440d97470fad09c96"
     },
     "tdd-implementation": {
       "source": "chanakya-net/Maestro-AI",
       "sourceType": "github",
       "skillPath": "skills/tdd-implementation/SKILL.md",
-      "computedHash": "eef8e134d5f545c3dc6a992e8619ceb0c773597755fb94cfb01fa6e792a241a0"
+      "computedHash": "aa48856f4c06812525ead1c5af3a96a493e26bc12396d684f0587a159ff5fa6c"
+    },
+    "writing-agent-docs": {
+      "source": "chanakya-net/Maestro-AI",
+      "sourceType": "github",
+      "skillPath": "skills/writing-agent-docs/SKILL.md",
+      "computedHash": "2677322a88a78f87e14ef5da17093e5a07cc7fe3946bd6b6901768541aa7153e"
     }
   }
 }
