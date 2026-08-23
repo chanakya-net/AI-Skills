@@ -150,3 +150,6 @@ vite.config.ts.timestamp-*
 .codegraph/codegraph.db-shm
 .codegraph/.dirty
 __pycache__/
+
+# pair-colleague run artifacts (task text, agent transcripts, decisions)
+.pair-colleague/

@@ -477,6 +477,8 @@ elif action == "args_template":
         print(item)
 elif action == "default_permission":
     print(agent(arg).get("permission_modes", {}).get("default", ""))
+elif action == "read_only_permission":
+    print(agent(arg).get("permission_modes", {}).get("read_only", "") or "")
 elif action == "default_model":
     print(agent(arg).get("model", {}).get("default", ""))
 elif action == "model_flag_template":
@@ -517,6 +519,7 @@ json_value() {
       invoke_command) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].invocation.command // ""' ;;
       args_template) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].invocation.args_template[]?' ;;
       default_permission) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].permission_modes.default // ""' ;;
+      read_only_permission) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].permission_modes.read_only // ""' ;;
       default_model) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].model.default // ""' ;;
       model_flag_template) json_jq --arg a "${arg}" '(.aliases[$a] // $a) as $id | .agents[$id].model.flag_template // ""' ;;
       model_reasoning_effort) json_jq --arg m "${arg}" '.model_catalog[$m].reasoning_effort // ""' ;;
@@ -675,12 +678,18 @@ if [[ -z "${AGENT_PERMISSION_MODE}" ]]; then
   AGENT_PERMISSION_MODE="$(json_value default_permission "${AGENT}")"
 fi
 
+# "safe" is a request for the harness's registered read-only profile, not a
+# flag. Resolving it to nothing would hand the agent whatever the harness
+# defaults to — which is usually writable — so a harness without a registered
+# read-only mode fails here instead of silently getting write access.
+if [[ "${AGENT_PERMISSION_MODE}" == "safe" ]]; then
+  safe_permission_mode="$(json_value read_only_permission "${AGENT}")"
+  [[ -n "${safe_permission_mode}" ]] || fail "agent ${AGENT} has no registered read-only permission mode (permission_modes.read_only in agent-registry.json); --permission-mode safe cannot be honoured for it"
+  AGENT_PERMISSION_MODE="${safe_permission_mode}"
+fi
+
 resolve_gui_mode
 apply_gui_permission_mode
-
-if [[ "${AGENT_PERMISSION_MODE}" == "safe" ]]; then
-  AGENT_PERMISSION_MODE=""
-fi
 
 PAYLOAD_FILE="$(mktemp -t ai-skills-prompt.XXXXXX)"
 status_stream_dir=""

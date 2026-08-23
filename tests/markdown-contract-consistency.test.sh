@@ -229,6 +229,62 @@ assert_contains "skills/run-with-it/SKILL.md" 'MAX_WORKER_WAIT_SECONDS' \
 assert_contains "skills/run-with-it/SKILL.md" 'RUN_WITH_IT_WORKER_STALE_SECONDS' \
   "skill must document the worker staleness bound"
 
+# --- pair-colleague: docs must match the runtime contract ---
+# The coordinator is the invoking agent, agents launch only through run-agent.sh,
+# and the round bounds/exit codes documented here are the ones the script enforces.
+
+assert_contains "skills/pair-colleague/SKILL.md" 'never guess' \
+  "pair-colleague skill must forbid guessing harness/model/effort"
+assert_contains "skills/pair-colleague/SKILL.md" 'one question at a time' \
+  "pair-colleague skill must ask for missing configuration one question at a time"
+assert_contains "skills/pair-colleague/SKILL.md" 'COORDINATOR_ACTION: CONTINUE' \
+  "pair-colleague skill must carry the coordinator action contract"
+assert_contains "assets/pair-colleague-agent-prompt.md" 'DISCUSSION_STATUS: READY' \
+  "pair-colleague agent prompt must carry both advisory status values"
+assert_contains "assets/pair-colleague.sh" 'MIN_ROUNDS:-3' \
+  "pair-colleague default minimum rounds must stay 3"
+assert_contains "assets/pair-colleague.sh" 'MAX_ROUNDS:-8' \
+  "pair-colleague default maximum rounds must stay 8"
+assert_contains "README.md" '| `MIN_ROUNDS` / `--min-rounds` | `3` |' \
+  "README must document the enforced minimum-round default"
+assert_contains "README.md" '| `MAX_ROUNDS` / `--max-rounds` | `8` |' \
+  "README must document the enforced maximum-round default"
+assert_contains "assets/pair-colleague.sh" 'TIMEOUT_SECONDS:-3600' \
+  "pair-colleague default agent timeout must stay 3600s (60 min)"
+assert_contains "README.md" '| `TIMEOUT_SECONDS` / `--timeout-seconds` | `3600` (60 min) |' \
+  "README must document the enforced agent-timeout default"
+assert_contains "skills/pair-colleague/SKILL.md" 'default 3600' \
+  "pair-colleague skill must document the enforced agent-timeout default"
+assert_contains "README.md" 'Bash only' \
+  "README must scope pair-colleague to Bash for v1"
+assert_not_contains "skills/pair-colleague/SKILL.md" 'AGENT_1_CMD' \
+  "pair-colleague must not document an arbitrary command escape hatch"
+assert_not_contains "README.md" 'pair-colleague.ps1' \
+  "no PowerShell pair-colleague runner exists in v1"
+
+# The supported-platform claim, the busy exit code, and the safe-mode contract
+# must say the same thing in the runtime, the skill, and the README.
+assert_contains "assets/pair-colleague.sh" 'EXIT_BUSY=4' \
+  "pair-colleague must reserve exit code 4 for a busy run"
+assert_contains "skills/pair-colleague/SKILL.md" '| `4` |' \
+  "pair-colleague skill must document the busy exit code"
+assert_contains "skills/pair-colleague/SKILL.md" 'macOS, Linux, and WSL' \
+  "pair-colleague skill must scope v1 to macOS, Linux, and WSL"
+assert_contains "README.md" 'macOS, Linux, and WSL' \
+  "README must scope pair-colleague to macOS, Linux, and WSL"
+assert_not_contains "skills/pair-colleague/SKILL.md" 'Git Bash, and WSL' \
+  "pair-colleague skill must not advertise Git Bash as supported"
+assert_not_contains "README.md" 'Git Bash, and WSL' \
+  "README must not advertise Git Bash as supported"
+assert_contains "assets/pair-colleague.sh" 'PAIR_COLLEAGUE_UNAME_OVERRIDE' \
+  "pair-colleague must guard the platform at runtime, not only in prose"
+assert_contains "assets/run-agent.sh" 'read_only_permission' \
+  "safe permission mode must resolve to the registry read-only profile"
+assert_contains "assets/agent-registry.json" '"read_only": "--sandbox=read-only"' \
+  "the registry must record a real read-only profile for Codex"
+assert_contains "README.md" 'permission_modes.read_only' \
+  "README must document how safe mode resolves"
+
 # --- Result ---
 
 if [ "$FAILURES" -gt 0 ]; then

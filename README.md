@@ -108,6 +108,7 @@ Each skill is a standalone `SKILL.md` file that AI coding agents load as special
 | `run-with-it` | Two-layer orchestration runtime — schedules ready issues with topological ordering, routes work to the best agent/model, runs them in parallel pools with isolated worktrees, and recovers from merge conflicts automatically. |
 | `tdd-implementation` | Strict red-green-refactor loop — one test at a time, never cuts horizontal slices, verifies everything before committing. |
 | `help-me-debug` | Deep diagnosis workflow that produces both a human-readable root-cause report and a deterministic LLM-ready context file for handoff. |
+| `pair-colleague` | Two AI solution colleagues explore alternatives on the same problem across bounded rounds while the invoking agent coordinates, decides when the discussion has converged, and writes a final decision dossier. |
 | `save-tokens` | Ultra-compressed narration mode — drops articles, filler, and pleasantries while keeping code and technical terms exact. |
 
 ## Runtime Assets
@@ -119,6 +120,8 @@ The `assets/` directory contains the shared prompts, scripts, and configuration 
 | File | What it does |
 |------|-------------|
 | `run-agent.sh` / `run-agent.ps1` | Cross-agent CLI runner — wraps Codex, Claude, Agy, and OpenCode behind a unified interface with status bus, telemetry, GUI-safe permission downgrading, and structured agent-unavailable reporting; `github-copilot`/`copilot` fails fast while disabled. |
+| `pair-colleague.sh` | `pair-colleague` control plane (Bash only) — run state machine, frozen per-round context, round policy enforcement, and paired agent launches through `run-agent.sh`. |
+| `pair-colleague-process.py` | Concurrency and file primitives for `pair-colleague` — two children in separate process groups with independent timeouts, group termination without GNU `timeout`, atomic JSON/file writes, and Markdown contract validation. |
 | `run-with-it-dispatch.sh` / `run-with-it-dispatch.ps1` | Worker dispatcher — spawns background agent sessions via `run-agent`, monitors liveness, detects stalls, classifies failures as infrastructure vs. capability, and recovers missing result artifacts from git state. |
 | `run-with-it-pool.sh` / `run-with-it-pool.ps1` | Rolling-pool supervisor — fills available parallel slots with ready issues, spawns Sub-Coordinators, emits the live run-board, detects merge/sub-coordinator failures, and triggers recovery. |
 | `run-with-it-watch.sh` / `run-with-it-watch.ps1` | Bounded status watcher — each call prints status lines appended since the previous call and exits within its watch window; reports `pool-empty`, `running`, or `pool-dead` so the Main Coordinator stays attached without long blocking calls. |
@@ -135,6 +138,7 @@ The `assets/` directory contains the shared prompts, scripts, and configuration 
 | `artifact-recovery-prompt.md` | Artifact Recovery Worker — inspects dirty impl/modify work after artifact retry exhaustion, verifies or commits salvage, and writes a synthesized-result/requeue/blocked decision. |
 | `complexity-prompt.md` | Complexity scoring agent — scores issues on 9 dimensions (dependency risk, architecture risk, blast radius, etc.) for routing decisions. |
 | `merge-recovery-prompt.md` | Merge Recovery Coordinator — resolves conflicts when an issue branch can't merge into the shared feature branch. |
+| `pair-colleague-agent-prompt.md` | Solution colleague prompt — rendered per agent and per round with the colleague's name, the round number, the round bounds, and the effort level. |
 | `coordinator-rules.md` | Compact Sub-Coordinator rules re-read before every major phase for compaction survival. |
 | `main-orchestrator-rules.md` | Compact Main Orchestrator rules re-read every loop iteration after context compression. |
 
@@ -213,6 +217,154 @@ The system is built to survive LLM context compression — the Main Orchestrator
 - Sub-Coordinators never touch GitHub state — only the pool runner does
 - Worker completion requires both done sentinels and result artifacts; PID liveness alone is diagnostic
 - The live status bus is terminal-visible only: `.run-with-it/status/current.txt` is overwritten with the latest status, while `.run-with-it/status/events.log` is append-only
+
+## Pair Colleague
+
+`pair-colleague` is a separate workflow from `run-with-it`: instead of executing issues, it runs a bounded design discussion between two AI solution colleagues and produces a decision.
+
+### Roles
+
+| Role | Who | Responsibility |
+|------|-----|----------------|
+| Coordinator | **The AI agent you invoked the skill in** | Initializes and resumes runs, launches rounds, reads both responses, maintains the candidate-solution ledger, sets each round's focus, decides when to accept, writes the final dossier. |
+| Agent 1 | A harness + model + effort you choose | Equal solution colleague. |
+| Agent 2 | A harness + model + effort you choose | Equal solution colleague. |
+
+The coordinator is not a third launched model — there is no coordinator harness or model to configure. Agent 1 and Agent 2 are peers: neither reviews, grades, or judges the other, and completion order gives neither privileged context.
+
+### Explicit configuration for both colleagues
+
+Harness, model, and effort are **never guessed** and registry defaults are **never** silently substituted. Supply all six values (CLI flags override the matching environment variables):
+
+```bash
+assets/pair-colleague.sh start task.md \
+  --agent-1-harness codex  --agent-1-model gpt-5.6-terra   --agent-1-effort high \
+  --agent-2-harness claude --agent-2-model claude-sonnet-5 --agent-2-effort high
+```
+
+```bash
+printf '%s\n' 'Design a caching strategy for our API' | assets/pair-colleague.sh start - \
+  --agent-1-harness codex  --agent-1-model gpt-5.6-terra   --agent-1-effort high \
+  --agent-2-harness claude --agent-2-model claude-sonnet-5 --agent-2-effort high
+```
+
+Both colleagues launch **only** through `run-agent.sh` against `agent-registry.json`, in safe permission mode. The registry stays responsible for aliases, executable detection, invocation templates, model flags, effort settings, and supported-model metadata. There is no per-harness command builder, no direct provider CLI call, and no arbitrary command override — `AGENT_1_CMD`-style escape hatches do not exist by design.
+
+Safe mode is not "no flag". `--permission-mode safe` resolves to the harness's registered `permission_modes.read_only` profile — `--sandbox=read-only` for Codex, `--permission-mode=plan` for Claude Code — because colleagues must not modify the repository they are discussing. A harness with no registered read-only profile is refused at `start`, naming the harness, rather than quietly falling back to a writable default. `PAIR_COLLEAGUE_ALLOW_UNVERIFIED_SAFE=1` overrides that refusal for a harness you have verified yourself; the run then records `safety_profile: unverified` and warns that the repository may be modified.
+
+Before creating a run, the script rejects an empty task, missing harness/model/effort values, and invalid efforts, then confirms through the runner that each harness is detected and each model is registered for it:
+
+```bash
+assets/run-agent.sh --list-agents --detected-only
+assets/run-agent.sh --list-models <agent>
+```
+
+The two colleagues may share a harness or model. That is allowed but usually narrows the initial solution set — different harnesses or models tend to open with genuinely different ideas.
+
+### Isolated round 1, frozen context afterwards
+
+Round 1 contains only the problem and its constraints, and asks each colleague to develop **at least two materially distinct credible solutions** independently (or explain why alternatives are not viable). Neither colleague sees the other's ideas, which is what keeps the opening set unanchored.
+
+From round 2 onward both colleagues receive the **exact same immutable snapshot bytes**, with the SHA-256 digest recorded and re-verified before every launch:
+
+```text
+# Original problem                        # Rejected candidates
+# Constraints and success criteria        # Unresolved questions and risks
+# Candidate-solution ledger               # Coordinator focus for this round
+# Current synthesis or preferred direction# Previous round: Agent 1
+# Agreements                              # Previous round: Agent 2
+# Disagreements
+```
+
+Only the **previous** round appears verbatim, alongside the coordinator's compact cumulative ledger — so context stays bounded as rounds accumulate. The full history is preserved on disk. Within a round, neither colleague can see the other's current response: both are launched concurrently in separate process groups, and the coordinator reads both only after the round completes.
+
+### Round bounds and coordinator authority
+
+| Setting | Default | Valid range |
+|---------|---------|-------------|
+| `MIN_ROUNDS` / `--min-rounds` | `3` | `2 <= MIN_ROUNDS <= MAX_ROUNDS` |
+| `MAX_ROUNDS` / `--max-rounds` | `8` | `MAX_ROUNDS <= 8` |
+| `TIMEOUT_SECONDS` / `--timeout-seconds` | `3600` (60 min) | positive integer, per agent per attempt |
+| `MAX_AGENT_ATTEMPTS` | `3` | positive integer |
+| `PAIR_COLLEAGUE_RUN_ROOT` / `--run-root` | `.pair-colleague/runs` | any writable directory |
+| `PAIR_COLLEAGUE_TERMINATION_GRACE_SECONDS` | `60` | seconds an agent may overrun its deadline before being terminated as hung |
+
+A round counts as complete only when **both** colleagues return valid responses to the same snapshot. Each colleague ends its reply with `DISCUSSION_STATUS: CONTINUE` or `DISCUSSION_STATUS: READY`; those statuses are **advisory evidence only**. `READY` from both never bypasses the minimum, and never overrides the coordinator.
+
+`record-decision` enforces the policy mechanically: `ACCEPT` before the minimum is rejected without changing state, and `CONTINUE` at the maximum round is rejected because round `MAX_ROUNDS` is a hard stop. Within those bounds the coordinator decides on semantic judgment — accept a solution both colleagues support, select one when they disagree, or synthesize compatible parts of several candidates.
+
+Completion reasons are deterministic:
+
+| Reason | When |
+|--------|------|
+| `coordinator-accepted` | `ACCEPT` recorded after the minimum and before the maximum |
+| `maximum-rounds` | `ACCEPT` recorded for the maximum round, even if that round also reached agreement |
+| `blocked` | Infrastructure failures exhausted the retry budget before the discussion could finish |
+
+A `blocked` run **cannot** be finalized — it must not produce a falsely conclusive dossier. Unresolved disagreement is never smoothed over: it is carried in the coordinator decision and reproduced in the final dossier alongside the coordinator's resolution.
+
+### Run artifacts and resumption
+
+Every run gets its own atomically created directory (timestamp plus random suffix, so simultaneous starts cannot collide):
+
+```text
+.pair-colleague/runs/20260823-092500-a1b2c3/
+  task.md  config.json  state.json
+  rounds/round-01/
+    snapshot.md  snapshot.sha256
+    agent-1-prompt.md  agent-1-output.md  agent-1-stderr.log  agent-1-run.json
+    agent-2-prompt.md  agent-2-output.md  agent-2-stderr.log  agent-2-run.json
+    agent-2-attempt-01-output.md          # failed attempts are kept, never overwritten
+    agent-2-attempt-01-run.json           # attempt manifest: host, pid, pgid, deadline, outcome
+    coordinator-decision-template.md  coordinator-decision.md
+  final-solution.md
+  .lock/                                  # present only while a mutating command is running
+```
+
+`state.json` is the source of truth for phase, round, completed colleagues, retry counts, decisions, and completion reason; it and every canonical artifact are written atomically, so a failed command leaves the last committed state untouched. Only non-secret effective configuration is stored — no environment dumps, tokens, or credentials. If one colleague fails, its result is preserved and only the failed colleague is retried against the unchanged snapshot.
+
+### Concurrency, interruption, and recovery
+
+Agents cost money and can outlive the command that started them, so the control plane never guesses:
+
+- **One writer at a time.** Every mutating command holds an exclusive per-run lock. A second `run-round` against the same run exits `4` with `LAUNCH=busy` and changes nothing, instead of allocating the same attempt number twice. A lock left by a dead process on this host is cleared automatically; a lock recorded on a different host needs `--break-lock`, because its liveness cannot be checked here.
+- **Breaking a lock never authorizes a relaunch.** Each attempt records its own manifest — host, supervisor pid, process-group id, deadline, snapshot digest — before the child exists. `run-round` reconciles those manifests first: an agent still running means exit `4`, an agent that finished is collected and promoted without being launched again, and an agent past its deadline plus `PAIR_COLLEAGUE_TERMINATION_GRACE_SECONDS` is terminated and recorded as timed out.
+- **Interruption cleans up.** `SIGINT`/`SIGTERM`/`SIGHUP` to the supervisor terminate every launched process group — children and grandchildren — and mark each attempt manifest `interrupted`.
+- **Retries converge.** Repeating a mutating command with byte-identical input finishes the interrupted transition and commits the same state; repeating it with different input fails with exit `2` and names the conflicting artifact rather than overwriting it. This holds across every artifact/state boundary: attempt collection, output promotion, the coordinator decision, the next snapshot, and the final dossier.
+- **Deliberate abandonment.** `reap --run-dir <dir> --force` terminates live agents and records the attempt as failed. Without `--force` it refuses while work is in flight.
+
+### Workspace identity
+
+A run is bound at `start` to the repository it was created in and records it as `workspace_root`. Every agent is launched with that directory as its working directory and its `REPO_ROOT`, so resuming from another directory — or inheriting a conflicting `REPO_ROOT` — cannot make a later round review a different repository. Runs created before this binding existed report an empty `WORKSPACE_ROOT` and must be bound once, explicitly, with `--bind-workspace <dir>`.
+
+### Artifact integrity
+
+The frozen snapshot is verified before the agents launch **and again after they exit**, so a snapshot that changed while they worked invalidates the round instead of silently reshaping the context. Promoted colleague responses, coordinator decisions, and the final dossier are hashed when recorded and re-verified before they are used downstream. This protects against accidental and concurrent mutation; it is not a defence against a hostile process running as the same user, which could rewrite an artifact and its recorded digest together. Asset digests (runner, process helper, prompt template) are recorded at `start` and drift is reported as a warning.
+
+Resume any run with `status`, which prints the phase and paths without changing state:
+
+```bash
+assets/pair-colleague.sh status --run-dir .pair-colleague/runs/<run-id>
+```
+
+| `STATUS` | Next step |
+|----------|-----------|
+| `initialized` / `awaiting-agents` | `run-round` |
+| `awaiting-coordinator` | Read the round, write the decision, `record-decision` |
+| `continue` | `run-round` on the newly generated snapshot |
+| `awaiting-final` | Write the dossier, `finalize` |
+| `complete` | Present `final-solution.md` |
+| `error` + `COMPLETION_REASON=blocked` | Report the blocker; the run cannot be finalized |
+
+`status` also reports `WORKSPACE_ROOT` and `LIVE_AGENTS`. It never takes the lock and never mutates state, so it stays usable while a round is running.
+
+### The final dossier
+
+`finalize` validates the dossier before saving it as `final-solution.md`, rejecting missing or duplicated headings, placeholder text, an inconsistent round count, or a completion reason that conflicts with the run state. Validation is fence-aware: Markdown inside a fenced code block is an example, never document structure, so a dossier may quote the template it was built from without tripping the heading, status-line, or placeholder rules — while an untouched template still fails. The `## Discussion record` provenance must appear inside that section exactly once, and the `Agent 1` / `Agent 2` lines must match the harness, model, and effort the run actually used. It covers the executive summary; problem and success criteria; constraints and assumptions; every candidate considered; the trade-off comparison; the selected or synthesized solution; its detailed design and operation; how it maps onto the requirements; the implementation approach; the decision rationale; where the colleagues agreed; any remaining disagreement and how the coordinator resolved it; rejected alternatives; risks and mitigations; open questions needing a human; and the discussion record (both colleagues' configuration, round counts, completion reason, and run directory).
+
+### Scope
+
+Version 1 is **Bash only** — macOS, Linux, and WSL. Native Windows (Git Bash, MSYS, Cygwin) is **not** supported: the process helper depends on POSIX sessions, process groups, and signal delivery to terminate agent process trees, so `pair-colleague.sh` refuses to run there and points at WSL. There is no native PowerShell implementation, and `install.ps1` deliberately does not install these assets rather than shipping a Bash feature whose runner assets are missing. Orchestration is entirely local; the harnesses you configure may still call remote models.
 
 ## Routing Controls
 
@@ -300,6 +452,7 @@ bash tests/run-agent.test.sh
 bash tests/run-with-it-dispatch.test.sh
 bash tests/run-with-it-pool.test.sh
 bash tests/run-with-it-routing.test.sh
+bash tests/pair-colleague.test.sh
 ```
 
 The suite is contract-heavy — verifying exact string presence in output, skill boundaries, routing language, status events, done sentinels, artifact synthesis, failure classification, PowerShell parity, and orchestration state transitions.
@@ -345,6 +498,7 @@ AI-Skills/
 │   ├── break-req/SKILL.md
 │   ├── create-git-issue/SKILL.md
 │   ├── help-me-debug/SKILL.md
+│   ├── pair-colleague/SKILL.md
 │   ├── run-with-it/SKILL.md
 │   ├── save-tokens/SKILL.md
 │   └── tdd-implementation/SKILL.md
@@ -352,6 +506,9 @@ AI-Skills/
 ├── assets/                                # Shared prompts, scripts, and configs
 │   ├── agent-registry.json                # Agent detection, invocation, model catalog
 │   ├── run-agent.sh / run-agent.ps1       # Cross-agent CLI runner
+│   ├── pair-colleague.sh                  # Two-agent solution coordinator control plane (Bash only)
+│   ├── pair-colleague-process.py          # Concurrent agent execution, timeouts, atomic writes, validators
+│   ├── pair-colleague-agent-prompt.md     # Solution colleague prompt template
 │   ├── run-with-it-dispatch.sh / run-with-it-dispatch.ps1 # Worker dispatcher with stall detection
 │   ├── run-with-it-pool.sh / run-with-it-pool.ps1         # Rolling-pool supervisor
 │   ├── run-with-it-watch.sh / run-with-it-watch.ps1       # Bounded status watcher
@@ -372,11 +529,12 @@ AI-Skills/
 │   ├── coordinator-rules.md               # Compact Sub-Coordinator rules
 │   └── main-orchestrator-rules.md         # Compact Main Orchestrator rules
 │
-├── tests/                                 # Contract test suite (26 files)
+├── tests/                                 # Contract test suite (31 files)
 │   ├── run-agent.test.sh                  # Runner behavior, dry-run, telemetry
 │   ├── run-with-it-dispatch.test.sh       # Dispatcher smoke tests, artifact recovery
 │   ├── run-with-it-pool.test.sh           # Pool scheduling, dependency awareness
 │   ├── run-with-it-routing.test.sh        # Router behavior, score-to-level mapping
+│   ├── pair-colleague.test.sh             # Two-agent coordinator contract, frozen context, round policy
 │   ├── install-assets-contract.test.sh    # Installer output verification
 │   └── ... (19 more)
 │
