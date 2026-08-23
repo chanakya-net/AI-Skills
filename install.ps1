@@ -109,6 +109,7 @@ function Install-Assets {
         foreach ($f in $files) {
             Note "  [dry-run] Invoke-WebRequest $baseUrl/$f -OutFile $ASSETS_DEST\$f"
         }
+        Note "  [dry-run] pair-colleague is Bash-only and is not installed by this script; use WSL"
         $WOULD_INSTALL.Add("assets")
         Write-Host ""
         return
@@ -135,6 +136,9 @@ function Install-Assets {
 
     $INSTALLED.Add("assets")
     Note "  assets installed at: $ASSETS_DEST"
+    Note "  pair-colleague is Bash-only and is NOT installed here. It needs POSIX process"
+    Note "  groups and signals, which native Windows does not provide. To use it, install a"
+    Note "  WSL distribution, run 'bash install.sh' inside WSL, and start runs from the WSL shell."
     Write-Host ""
 }
 

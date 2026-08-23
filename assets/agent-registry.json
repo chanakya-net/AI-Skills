@@ -743,11 +743,13 @@
       },
       "permission_modes": {
         "default": "--dangerously-bypass-approvals-and-sandbox",
+        "read_only": "--sandbox=read-only",
         "available": [
           "--dangerously-bypass-approvals-and-sandbox",
           "--sandbox=read-only",
           "--sandbox=workspace-write"
-        ]
+        ],
+        "_note": "read_only is the profile --permission-mode safe resolves to. Codex enforces it in its own sandbox; it must deny writes to the workspace."
       },
       "model": {
         "default": "",
@@ -803,9 +805,12 @@
       },
       "permission_modes": {
         "default": "--dangerously-skip-permissions",
+        "read_only": "--permission-mode=plan",
         "available": [
-          "--dangerously-skip-permissions"
-        ]
+          "--dangerously-skip-permissions",
+          "--permission-mode=plan"
+        ],
+        "_note": "plan mode is Claude Code's write-denying mode: it may read and research but may not edit, write, or run mutating commands. It is what --permission-mode safe resolves to."
       },
       "model": {
         "default": "claude-sonnet-4-6",
